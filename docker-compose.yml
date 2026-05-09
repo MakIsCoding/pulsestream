@@ -106,6 +106,34 @@ services:
         condition: service_healthy
     networks:
       - pulsestream
+  # ============================================
+  # APPLICATION SERVICES
+  # ============================================
+
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    container_name: pulsestream-web
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/web:/app/services/web
+      - ./shared:/app/shared
+      - ./frontend:/app/frontend
+    networks:
+      - pulsestream
+
+
 
 # ============================================
 # VOLUMES & NETWORKS
