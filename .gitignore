@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env (NEVER commit secrets)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Docker
+*.tar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+
+# Frontend
+node_modules/
+
+# Local data
+data/
+*.db
+*.sqlite
