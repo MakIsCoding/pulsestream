@@ -1,0 +1,79 @@
+"""
+Centralized configuration for all PulseStream services.
+
+Reads from environment variables (loaded from .env in dev, from the platform's
+env in production). Every service imports `settings` from here instead of
+calling os.environ directly.
+"""
+
+from functools import lru_cache
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # === Database ===
+    database_url: str = Field(..., alias="DATABASE_URL")
+    postgres_user: str = Field("pulsestream", alias="POSTGRES_USER")
+    postgres_password: str = Field("pulsestream_dev_password", alias="POSTGRES_PASSWORD")
+    postgres_db: str = Field("pulsestream", alias="POSTGRES_DB")
+    postgres_host: str = Field("postgres", alias="POSTGRES_HOST")
+    postgres_port: int = Field(5432, alias="POSTGRES_PORT")
+
+    # === Redis ===
+    redis_url: str = Field("redis://redis:6379", alias="REDIS_URL")
+    redis_host: str = Field("redis", alias="REDIS_HOST")
+    redis_port: int = Field(6379, alias="REDIS_PORT")
+
+    # === Kafka ===
+    kafka_bootstrap_servers: str = Field("kafka:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
+    kafka_topic_mentions_raw: str = Field("mentions.raw", alias="KAFKA_TOPIC_MENTIONS_RAW")
+    kafka_topic_mentions_analyzed: str = Field("mentions.analyzed", alias="KAFKA_TOPIC_MENTIONS_ANALYZED")
+    kafka_topic_topics_created: str = Field("topics.created", alias="KAFKA_TOPIC_TOPICS_CREATED")
+
+    # === Auth ===
+    jwt_secret: str = Field("change-me", alias="JWT_SECRET")
+    jwt_algorithm: str = Field("HS256", alias="JWT_ALGORITHM")
+    jwt_expiry_hours: int = Field(24, alias="JWT_EXPIRY_HOURS")
+
+    # === AI (Google Gemini) ===
+    gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
+    gemini_model: str = Field("gemini-2.5-flash-lite", alias="GEMINI_MODEL")
+
+    # === Reddit (optional) ===
+    reddit_client_id: str = Field("", alias="REDDIT_CLIENT_ID")
+    reddit_client_secret: str = Field("", alias="REDDIT_CLIENT_SECRET")
+    reddit_user_agent: str = Field("pulsestream/0.1", alias="REDDIT_USER_AGENT")
+
+    # === Scheduler ===
+    ingestion_interval_seconds: int = Field(60, alias="INGESTION_INTERVAL_SECONDS")
+
+    # === Service ports ===
+    web_port: int = Field(8000, alias="WEB_PORT")
+    websocket_port: int = Field(8001, alias="WEBSOCKET_PORT")
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """
+    Returns a cached singleton Settings instance.
+
+    Using lru_cache ensures we read the env vars only once per process,
+    not on every import. Every service calls `from shared.config import settings`.
+    """
+    return Settings()
+
+
+# Module-level singleton — import this directly:
+#   from shared.config import settings
+#   print(settings.database_url)
+settings = get_settings()
