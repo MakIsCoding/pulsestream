@@ -132,7 +132,7 @@ services:
       - ./frontend:/app/frontend
     networks:
       - pulsestream
-      
+
   scheduler:
     build:
       context: .
@@ -150,7 +150,24 @@ services:
       - ./shared:/app/shared
     networks:
       - pulsestream
-
+      
+  ingester:
+    build:
+      context: .
+      dockerfile: services/ingester/Dockerfile
+    container_name: pulsestream-ingester
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/ingester:/app/services/ingester
+      - ./shared:/app/shared
+    networks:
+      - pulsestream
 
 
 # ============================================
