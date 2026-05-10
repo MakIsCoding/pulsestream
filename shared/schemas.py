@@ -158,3 +158,14 @@ class MentionAnalyzedEvent(BaseModel):
     sentiment_label: str | None
     entities: list[str] | None
     summary: str | None
+    
+class IngestionJobEvent(BaseModel):
+    """
+    Published by scheduler to request that an ingester fetch new
+    mentions for a topic from a specific source.
+    """
+    topic_id: UUID
+    user_id: UUID
+    name: str
+    keywords: list[str]
+    source: str  # "hackernews", "reddit", etc.

@@ -132,6 +132,24 @@ services:
       - ./frontend:/app/frontend
     networks:
       - pulsestream
+      
+  scheduler:
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+    container_name: pulsestream-scheduler
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/scheduler:/app/services/scheduler
+      - ./shared:/app/shared
+    networks:
+      - pulsestream
 
 
 
