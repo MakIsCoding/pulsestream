@@ -45,12 +45,15 @@ class Base(DeclarativeBase):
 # The engine is the connection pool. One per process.
 # echo=False keeps SQL queries out of the logs in production;
 # flip to True locally if you want to see every query.
+_connect_args: dict = {"ssl": True} if settings.database_ssl else {}
+
 engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,  # checks connection health before using it
     pool_size=10,
     max_overflow=20,
+    connect_args=_connect_args,
 )
 
 # Session factory. Each request/task gets its own session via this.

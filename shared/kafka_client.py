@@ -34,6 +34,23 @@ from shared.config import settings
 _producer: Optional[AIOKafkaProducer] = None
 
 
+def _kafka_security_kwargs() -> dict:
+    """Return SASL/SSL kwargs when cloud Kafka is configured.
+
+    Local dev uses plain PLAINTEXT (no extra kwargs).
+    Cloud (Upstash) uses SASL_SSL + SCRAM-SHA-256.
+    """
+    proto = settings.kafka_security_protocol.upper()
+    if proto == "PLAINTEXT":
+        return {}
+    return {
+        "security_protocol": proto,
+        "sasl_mechanism": "SCRAM-SHA-256",
+        "sasl_plain_username": settings.kafka_sasl_username,
+        "sasl_plain_password": settings.kafka_sasl_password,
+    }
+
+
 async def get_producer() -> AIOKafkaProducer:
     """
     Returns the shared async Kafka producer.
@@ -45,14 +62,10 @@ async def get_producer() -> AIOKafkaProducer:
     if _producer is None:
         _producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
-            # Wait for at least the leader to acknowledge each message.
-            # 'all' would wait for all replicas (more durable, slower).
             acks=1,
-            # Batch messages for efficiency. 5ms linger trades a bit of
-            # latency for much higher throughput.
             linger_ms=5,
-            # Compress payloads in transit (uses CPU, saves bandwidth).
             compression_type="gzip",
+            **_kafka_security_kwargs(),
         )
         await _producer.start()
     return _producer
@@ -111,6 +124,7 @@ async def make_consumer(
         auto_offset_reset=auto_offset_reset,
         enable_auto_commit=True,
         auto_commit_interval_ms=5000,
+        **_kafka_security_kwargs(),
     )
     await consumer.start()
     try:

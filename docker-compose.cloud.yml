@@ -1,0 +1,86 @@
+# PulseStream — cloud deployment
+#
+# Runs only the application containers. All infrastructure (Postgres, Redis,
+# Kafka) is provided by managed services (Neon, Upstash).
+#
+# Usage:
+#   cp .env.cloud.example .env.cloud
+#   # fill in credentials from Neon / Upstash dashboards
+#   docker compose -f docker-compose.cloud.yml up -d
+#
+# Volumes are still mounted so you can hot-reload code without rebuilding.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    container_name: pulsestream-web
+    restart: unless-stopped
+    env_file: .env.cloud
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - ./services/web:/app/services/web
+      - ./shared:/app/shared
+      - ./frontend:/app/frontend
+    networks:
+      - pulsestream
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+    container_name: pulsestream-scheduler
+    restart: unless-stopped
+    env_file: .env.cloud
+    volumes:
+      - ./services/scheduler:/app/services/scheduler
+      - ./shared:/app/shared
+    networks:
+      - pulsestream
+
+  ingester:
+    build:
+      context: .
+      dockerfile: services/ingester/Dockerfile
+    container_name: pulsestream-ingester
+    restart: unless-stopped
+    env_file: .env.cloud
+    volumes:
+      - ./services/ingester:/app/services/ingester
+      - ./shared:/app/shared
+    networks:
+      - pulsestream
+
+  analyzer:
+    build:
+      context: .
+      dockerfile: services/analyzer/Dockerfile
+    container_name: pulsestream-analyzer
+    restart: unless-stopped
+    env_file: .env.cloud
+    volumes:
+      - ./services/analyzer:/app/services/analyzer
+      - ./shared:/app/shared
+    networks:
+      - pulsestream
+
+  websocket:
+    build:
+      context: .
+      dockerfile: services/websocket/Dockerfile
+    container_name: pulsestream-websocket
+    restart: unless-stopped
+    env_file: .env.cloud
+    ports:
+      - "${WEBSOCKET_PORT:-8001}:8001"
+    volumes:
+      - ./services/websocket:/app/services/websocket
+      - ./shared:/app/shared
+    networks:
+      - pulsestream
+
+networks:
+  pulsestream:
+    driver: bridge

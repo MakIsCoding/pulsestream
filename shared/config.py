@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     # === Database ===
     database_url: str = Field(..., alias="DATABASE_URL")
+    database_ssl: bool = Field(False, alias="DATABASE_SSL")
     postgres_user: str = Field("pulsestream", alias="POSTGRES_USER")
     postgres_password: str = Field("pulsestream_dev_password", alias="POSTGRES_PASSWORD")
     postgres_db: str = Field("pulsestream", alias="POSTGRES_DB")
@@ -36,6 +37,9 @@ class Settings(BaseSettings):
 
     # === Kafka ===
     kafka_bootstrap_servers: str = Field("kafka:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
+    kafka_security_protocol: str = Field("PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
+    kafka_sasl_username: str = Field("", alias="KAFKA_SASL_USERNAME")
+    kafka_sasl_password: str = Field("", alias="KAFKA_SASL_PASSWORD")
     kafka_topic_mentions_raw: str = Field("mentions.raw", alias="KAFKA_TOPIC_MENTIONS_RAW")
     kafka_topic_mentions_analyzed: str = Field("mentions.analyzed", alias="KAFKA_TOPIC_MENTIONS_ANALYZED")
     kafka_topic_topics_created: str = Field("topics.created", alias="KAFKA_TOPIC_TOPICS_CREATED")

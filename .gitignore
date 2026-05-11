@@ -18,6 +18,7 @@ env/
 
 # Env (NEVER commit secrets)
 .env
+.env.cloud
 .env.local
 .env.*.local
 .env.production
