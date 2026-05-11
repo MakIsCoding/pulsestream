@@ -23,6 +23,7 @@ Usage (consumer):
 """
 
 import json
+import ssl
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
@@ -43,11 +44,14 @@ def _kafka_security_kwargs() -> dict:
     proto = settings.kafka_security_protocol.upper()
     if proto == "PLAINTEXT":
         return {}
+    # aiokafka requires an explicit ssl_context for SASL_SSL / SSL.
+    ssl_ctx = ssl.create_default_context()
     return {
         "security_protocol": proto,
         "sasl_mechanism": settings.kafka_sasl_mechanism,
         "sasl_plain_username": settings.kafka_sasl_username,
         "sasl_plain_password": settings.kafka_sasl_password,
+        "ssl_context": ssl_ctx,
     }
 
 
