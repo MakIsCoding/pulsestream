@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     # === Scheduler ===
     ingestion_interval_seconds: int = Field(60, alias="INGESTION_INTERVAL_SECONDS")
+    mention_retention_days: int = Field(30, alias="MENTION_RETENTION_DAYS")
 
     # === Service ports ===
     web_port: int = Field(8000, alias="WEB_PORT")

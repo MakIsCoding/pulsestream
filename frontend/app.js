@@ -1,7 +1,6 @@
 'use strict'
 
 // ─── Config ────────────────────────────────────────────────────────────────────
-// WebSocket lives on a separate port. API calls are relative (same origin as web).
 const WS_PORT = 8001
 
 // ─── State ─────────────────────────────────────────────────────────────────────
@@ -16,6 +15,8 @@ const state = {
   ws: null,
   wsConnected: false,
   newMentionIds: new Set(),
+  stats: { topic_count: 0, mention_count: 0 },
+  trendChart: null,
 }
 
 // ─── API Helper ────────────────────────────────────────────────────────────────
@@ -41,8 +42,7 @@ async function login(email, password) {
   if (!data) return
   state.token = data.access_token
   localStorage.setItem('ps_token', state.token)
-  await loadUser()
-  await fetchTopics()
+  await Promise.all([loadUser(), fetchTopics(), fetchStats()])
   navigate('dashboard')
   connectWs()
 }
@@ -55,8 +55,7 @@ async function register(email, password) {
   if (!data) return
   state.token = data.access_token
   localStorage.setItem('ps_token', state.token)
-  await loadUser()
-  await fetchTopics()
+  await Promise.all([loadUser(), fetchTopics(), fetchStats()])
   navigate('dashboard')
   connectWs()
 }
@@ -66,6 +65,7 @@ function logout() {
   state.user = null
   state.topics = []
   state.currentTopicId = null
+  state.stats = { topic_count: 0, mention_count: 0 }
   localStorage.removeItem('ps_token')
   disconnectWs()
   navigate('login')
@@ -86,20 +86,53 @@ async function createTopic(name, keywords) {
     method: 'POST',
     body: JSON.stringify({ name, keywords }),
   })
-  if (topic) state.topics.unshift(topic)
+  if (topic) {
+    state.topics.unshift(topic)
+    state.stats.topic_count++
+  }
   return topic
 }
 
 async function deleteTopic(id) {
   await api(`/topics/${id}`, { method: 'DELETE' })
   state.topics = state.topics.filter(t => t.id !== id)
+  state.stats.topic_count = Math.max(0, state.stats.topic_count - 1)
+}
+
+async function toggleTopicPause(id) {
+  const topic = state.topics.find(t => t.id === id)
+  if (!topic) return
+  const endpoint = topic.is_active ? `/topics/${id}/pause` : `/topics/${id}/resume`
+  try {
+    const updated = await api(endpoint, { method: 'PATCH' })
+    if (updated) {
+      const idx = state.topics.findIndex(t => t.id === id)
+      if (idx !== -1) state.topics[idx] = updated
+      document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
+      showToast(
+        updated.is_active ? 'Topic resumed' : 'Topic paused',
+        `"${updated.name}" ingestion ${updated.is_active ? 'resumed' : 'paused'}`
+      )
+    }
+  } catch (e) {
+    showToast('Error', e.message)
+  }
+}
+
+// ─── Stats ─────────────────────────────────────────────────────────────────────
+async function fetchStats() {
+  const data = await api('/auth/me/stats')
+  if (data) state.stats = data
+}
+
+function formatStats() {
+  const { topic_count: t, mention_count: m } = state.stats
+  if (!t && !m) return ''
+  return `${t} topic${t !== 1 ? 's' : ''} · ${m.toLocaleString()} mention${m !== 1 ? 's' : ''} stored`
 }
 
 // ─── Mentions ──────────────────────────────────────────────────────────────────
 async function fetchMentions(topicId, reset = false) {
-  // Use a local offset so state isn't mutated until the fetch succeeds.
-  // This prevents the "disappears" bug where navigating back and forward
-  // clears state.mentions before the new data arrives.
   const offset = reset ? 0 : state.mentionsOffset
   const url = `/mentions?topic_id=${topicId}&limit=20&offset=${offset}&only_analyzed=false`
   const data = await api(url)
@@ -113,6 +146,14 @@ async function fetchMentions(topicId, reset = false) {
     state.mentionsOffset += data.items.length
     state.mentionsTotal = data.total
   }
+}
+
+async function fetchDigest(topicId) {
+  return api(`/topics/${topicId}/digest/latest`)
+}
+
+async function fetchTrend(topicId, bucket = 'hour', window = '24h') {
+  return api(`/topics/${topicId}/trend?bucket=${bucket}&window=${window}`)
 }
 
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
@@ -153,7 +194,6 @@ function disconnectWs() {
 }
 
 function handleLiveMention(mention) {
-  // Update topic-detail feed if the user is currently viewing this topic.
   if (state.currentTopicId === mention.topic_id) {
     state.mentions.unshift({
       id: mention.mention_id,
@@ -338,11 +378,15 @@ async function handleAuthSubmit(evt, mode) {
 
 // ─── Page: Dashboard ───────────────────────────────────────────────────────────
 function renderDashboardPage() {
+  const statsText = formatStats()
   document.getElementById('app').innerHTML = `
     ${renderHeader()}
     <main class="max-w-5xl mx-auto px-4 py-8">
       <div class="flex items-center justify-between mb-6">
-        <h2 class="text-lg font-semibold text-white">Your Topics</h2>
+        <div>
+          <h2 class="text-lg font-semibold text-white">Your Topics</h2>
+          <p id="stats-counter" class="text-xs text-slate-500 mt-0.5">${statsText}</p>
+        </div>
         <button onclick="toggleCreatePanel()"
           class="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3.5 py-2 rounded-lg transition-colors">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -388,6 +432,12 @@ function renderDashboardPage() {
       <div id="topics-grid">${renderTopicsGrid()}</div>
     </main>
   `
+
+  // Refresh stats silently in the background after the page renders.
+  fetchStats().then(() => {
+    const el = document.getElementById('stats-counter')
+    if (el) el.textContent = formatStats()
+  }).catch(() => {})
 }
 
 function renderTopicsGrid() {
@@ -418,17 +468,43 @@ function renderTopicCard(topic) {
   const overflow = topic.keywords.length > 5
     ? `<span class="text-xs text-slate-600">+${topic.keywords.length - 5}</span>` : ''
 
+  const pausedPill = !topic.is_active
+    ? `<span class="text-xs px-1.5 py-0.5 bg-amber-500/15 text-amber-400 border border-amber-500/25 rounded font-medium">paused</span>`
+    : ''
+
+  const dotColor = topic.is_active ? 'bg-green-400 pulse-dot' : 'bg-amber-500'
+
+  // Pause icon (two vertical bars) when active; play icon (triangle) when paused.
+  const pauseIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+      d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>`
+  const playIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>`
+
   return `
-    <div class="group bg-slate-800/70 border border-slate-700 hover:border-slate-600 rounded-2xl p-5 transition-colors flex flex-col gap-4">
+    <div class="group bg-slate-800/70 border border-slate-700 hover:border-slate-600 rounded-2xl p-5 transition-colors flex flex-col gap-4 ${topic.is_active ? '' : 'opacity-60'}">
       <div class="flex items-start justify-between gap-2">
-        <h3 class="font-semibold text-white text-sm leading-snug">${escHtml(topic.name)}</h3>
-        <span class="shrink-0 mt-0.5 w-2 h-2 rounded-full ${topic.is_active ? 'bg-green-400 pulse-dot' : 'bg-slate-600'}"></span>
+        <div class="flex items-center gap-2 flex-wrap min-w-0">
+          <h3 class="font-semibold text-white text-sm leading-snug truncate">${escHtml(topic.name)}</h3>
+          ${pausedPill}
+        </div>
+        <span class="shrink-0 mt-0.5 w-2 h-2 rounded-full ${dotColor}"></span>
       </div>
       <div class="flex flex-wrap gap-1.5 min-h-5">${chips}${overflow}</div>
       <div class="flex items-center gap-2 mt-auto">
         <button onclick="openTopic('${topic.id}')"
           class="flex-1 bg-indigo-600/20 hover:bg-indigo-600/35 border border-indigo-600/30 text-indigo-400 text-xs font-medium py-2 rounded-lg transition-colors">
           View Mentions
+        </button>
+        <button onclick="toggleTopicPause('${topic.id}')"
+          title="${topic.is_active ? 'Pause ingestion' : 'Resume ingestion'}"
+          class="p-2 text-slate-600 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors">
+          ${topic.is_active ? pauseIcon : playIcon}
         </button>
         <button onclick="confirmDelete('${topic.id}','${escHtml(topic.name).replace(/'/g, "\\'")}')"
           title="Delete topic"
@@ -464,6 +540,8 @@ async function handleCreateTopic(evt) {
       document.getElementById('tp-name').value = ''
       document.getElementById('tp-keywords').value = ''
       document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
+      const el = document.getElementById('stats-counter')
+      if (el) el.textContent = formatStats()
       showToast('Topic created', `Tracking "${topic.name}"`)
     }
   } catch (e) {
@@ -477,6 +555,8 @@ function confirmDelete(id, name) {
   deleteTopic(id)
     .then(() => {
       document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
+      const el = document.getElementById('stats-counter')
+      if (el) el.textContent = formatStats()
       showToast('Topic deleted', `"${name}" was removed`)
     })
     .catch(e => showToast('Error', e.message))
@@ -488,6 +568,12 @@ function openTopic(id) {
 
 // ─── Page: Topic Detail ────────────────────────────────────────────────────────
 function renderTopicPage(topicId) {
+  // Destroy any previous Chart.js instance before replacing the DOM.
+  if (state.trendChart) {
+    state.trendChart.destroy()
+    state.trendChart = null
+  }
+
   state.currentTopicId = topicId
   state.newMentionIds = new Set()
 
@@ -512,16 +598,57 @@ function renderTopicPage(topicId) {
       </div>
 
       <!-- Topic header -->
-      <div class="mb-7">
-        <h2 class="text-xl font-bold text-white">${topic ? escHtml(topic.name) : 'Topic'}</h2>
-        ${topic && topic.keywords.length ? `
-          <div class="flex flex-wrap gap-2 mt-2.5">
-            ${topic.keywords.map(k =>
-              `<span class="bg-slate-800 border border-slate-700 text-slate-300 text-xs px-2.5 py-1 rounded-full">${escHtml(k)}</span>`
-            ).join('')}
+      <div class="mb-6">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-white">${topic ? escHtml(topic.name) : 'Topic'}</h2>
+            ${topic && topic.keywords.length ? `
+              <div class="flex flex-wrap gap-2 mt-2">
+                ${topic.keywords.map(k =>
+                  `<span class="bg-slate-800 border border-slate-700 text-slate-300 text-xs px-2.5 py-1 rounded-full">${escHtml(k)}</span>`
+                ).join('')}
+              </div>
+            ` : ''}
           </div>
-        ` : ''}
+          ${topic ? `
+            <button onclick="topicDetailPause('${topic.id}')"
+              id="detail-pause-btn"
+              title="${topic.is_active ? 'Pause ingestion' : 'Resume ingestion'}"
+              class="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors
+                ${topic.is_active
+                  ? 'border-slate-700 text-slate-400 hover:text-amber-400 hover:border-amber-500/40 hover:bg-amber-500/10'
+                  : 'border-amber-500/40 text-amber-400 bg-amber-500/10 hover:bg-amber-500/15'}">
+              ${topic.is_active
+                ? `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6"/>
+                   </svg>Pause`
+                : `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                       d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                   </svg>Resume`}
+            </button>
+          ` : ''}
+        </div>
       </div>
+
+      <!-- Sentiment trend chart -->
+      <div id="trend-section" class="mb-5 bg-slate-800/70 border border-slate-700 rounded-2xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <p class="text-xs font-medium text-slate-400">24h Sentiment Trend</p>
+          <div class="flex items-center gap-1.5 text-xs text-slate-600">
+            <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>avg score
+          </div>
+        </div>
+        <div class="h-20 flex items-center justify-center">
+          <svg class="w-4 h-4 animate-spin text-slate-600" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Digest card -->
+      <div id="digest-section" class="mb-5"></div>
 
       <!-- Mentions feed -->
       <div id="mentions-feed">
@@ -537,22 +664,208 @@ function renderTopicPage(topicId) {
     </main>
   `
 
-  // Fetch then render, and (re)connect WS
-  fetchMentions(topicId, true)
-    .then(() => renderMentionsFeed())
-    .catch(err => {
-      const container = document.getElementById('mentions-feed')
-      if (container) container.innerHTML = `
+  // Fetch everything in parallel; each section updates independently.
+  Promise.allSettled([
+    fetchMentions(topicId, true).then(() => renderMentionsFeed()).catch(err => {
+      const c = document.getElementById('mentions-feed')
+      if (c) c.innerHTML = `
         <div class="text-center py-12">
           <p class="text-sm text-red-400">Failed to load mentions</p>
           <p class="text-xs text-slate-600 mt-1">${escHtml(err.message)}</p>
         </div>`
-    })
-    .finally(() => updateWsIndicator(state.wsConnected))
+    }),
+    fetchTrend(topicId).then(t => renderTrendChart(t)).catch(() => {
+      const s = document.getElementById('trend-section')
+      if (s) s.innerHTML = `<p class="text-xs text-slate-600 text-center py-3">Trend unavailable</p>`
+    }),
+    fetchDigest(topicId).then(d => renderDigestCard(d)).catch(() => {}),
+  ]).finally(() => updateWsIndicator(state.wsConnected))
+
   connectWs()
   updateWsIndicator(state.wsConnected)
 }
 
+async function topicDetailPause(id) {
+  const topic = state.topics.find(t => t.id === id)
+  if (!topic) return
+  const endpoint = topic.is_active ? `/topics/${id}/pause` : `/topics/${id}/resume`
+  try {
+    const updated = await api(endpoint, { method: 'PATCH' })
+    if (!updated) return
+    const idx = state.topics.findIndex(t => t.id === id)
+    if (idx !== -1) state.topics[idx] = updated
+    showToast(
+      updated.is_active ? 'Topic resumed' : 'Topic paused',
+      `"${updated.name}" ingestion ${updated.is_active ? 'resumed' : 'paused'}`
+    )
+    // Re-render only the button to reflect the new state.
+    const btn = document.getElementById('detail-pause-btn')
+    if (btn) {
+      btn.title = updated.is_active ? 'Pause ingestion' : 'Resume ingestion'
+      btn.className = `shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors
+        ${updated.is_active
+          ? 'border-slate-700 text-slate-400 hover:text-amber-400 hover:border-amber-500/40 hover:bg-amber-500/10'
+          : 'border-amber-500/40 text-amber-400 bg-amber-500/10 hover:bg-amber-500/15'}`
+      btn.innerHTML = updated.is_active
+        ? `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6"/>
+           </svg>Pause`
+        : `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+               d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+           </svg>Resume`
+    }
+  } catch (e) {
+    showToast('Error', e.message)
+  }
+}
+
+// ─── Digest Card ───────────────────────────────────────────────────────────────
+function renderDigestCard(digest) {
+  const section = document.getElementById('digest-section')
+  if (!section) return
+  if (!digest) { section.innerHTML = ''; return }
+
+  const dist = digest.sentiment_distribution || {}
+  const total = (dist.positive || 0) + (dist.negative || 0) + (dist.neutral || 0)
+  const pct = n => total ? Math.round((n / total) * 100) : 0
+  const posP = pct(dist.positive || 0)
+  const neuP = pct(dist.neutral || 0)
+  const negP = pct(dist.negative || 0)
+
+  const entities = (digest.top_entities || []).slice(0, 8)
+
+  section.innerHTML = `
+    <div class="bg-slate-800/70 border border-slate-700 rounded-2xl p-5 fade-in">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-white">What people are saying</h3>
+        <span class="text-xs text-slate-600">${digest.mention_count} mentions · ${timeAgo(digest.generated_at)}</span>
+      </div>
+
+      ${digest.summary
+        ? `<p class="text-sm text-slate-300 leading-relaxed mb-4">${escHtml(digest.summary)}</p>`
+        : ''}
+
+      ${total > 0 ? `
+        <div class="mb-4">
+          <p class="text-xs text-slate-500 mb-1.5">Sentiment distribution</p>
+          <div class="flex h-1.5 rounded-full overflow-hidden gap-0.5">
+            ${posP > 0 ? `<div class="bg-green-500 rounded-full" style="width:${posP}%"></div>` : ''}
+            ${neuP > 0 ? `<div class="bg-slate-500 rounded-full" style="width:${neuP}%"></div>` : ''}
+            ${negP > 0 ? `<div class="bg-red-500 rounded-full" style="width:${negP}%"></div>` : ''}
+          </div>
+          <div class="flex gap-4 mt-1.5 text-xs">
+            <span class="text-green-400">${posP}% positive</span>
+            <span class="text-slate-500">${neuP}% neutral</span>
+            <span class="text-red-400">${negP}% negative</span>
+          </div>
+        </div>
+      ` : ''}
+
+      ${entities.length ? `
+        <div>
+          <p class="text-xs text-slate-500 mb-1.5">Top entities</p>
+          <div class="flex flex-wrap gap-1.5">
+            ${entities.map(e =>
+              `<span class="bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 text-xs px-2 py-0.5 rounded">#${escHtml(e)}</span>`
+            ).join('')}
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `
+}
+
+// ─── Trend Chart ───────────────────────────────────────────────────────────────
+function renderTrendChart(trend) {
+  const section = document.getElementById('trend-section')
+  if (!section) return
+
+  if (!trend || !trend.points || trend.points.length < 2) {
+    section.innerHTML = `
+      <div class="flex items-center justify-between mb-2">
+        <p class="text-xs font-medium text-slate-400">24h Sentiment Trend</p>
+      </div>
+      <p class="text-xs text-slate-600 text-center py-3">Not enough data yet — check back after a few ingestion cycles</p>
+    `
+    return
+  }
+
+  // Replace spinner with canvas.
+  section.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-xs font-medium text-slate-400">24h Sentiment Trend</p>
+      <div class="flex items-center gap-1.5 text-xs text-slate-600">
+        <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>avg score
+      </div>
+    </div>
+    <div class="h-20"><canvas id="trend-chart"></canvas></div>
+  `
+
+  if (typeof Chart === 'undefined') return
+
+  const canvas = document.getElementById('trend-chart')
+  const labels = trend.points.map(p => {
+    const d = new Date(p.bucket)
+    return `${d.getHours().toString().padStart(2, '0')}:00`
+  })
+  const scores = trend.points.map(p => p.avg_score != null ? parseFloat(p.avg_score.toFixed(2)) : 0)
+
+  state.trendChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: scores,
+        borderColor: '#818cf8',
+        backgroundColor: ctx => {
+          const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 80)
+          g.addColorStop(0, 'rgba(129,140,248,0.25)')
+          g.addColorStop(1, 'rgba(129,140,248,0)')
+          return g
+        },
+        borderWidth: 2,
+        fill: true,
+        tension: 0.4,
+        pointBackgroundColor: '#818cf8',
+        pointRadius: 3,
+        pointHoverRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 400 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e293b',
+          borderColor: '#334155',
+          borderWidth: 1,
+          titleColor: '#94a3b8',
+          bodyColor: '#e2e8f0',
+          callbacks: {
+            label: ctx => ` ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: '#1e293b' },
+          ticks: { color: '#475569', font: { size: 10 }, maxTicksLimit: 8 },
+        },
+        y: {
+          min: -1,
+          max: 1,
+          grid: { color: '#1e293b' },
+          ticks: { color: '#475569', font: { size: 10 }, callback: v => v.toFixed(1) }
+        }
+      }
+    }
+  })
+}
+
+// ─── Mentions Feed ─────────────────────────────────────────────────────────────
 function renderMentionsFeed() {
   const container = document.getElementById('mentions-feed')
   if (!container) return
@@ -560,7 +873,7 @@ function renderMentionsFeed() {
   if (!state.mentions.length) {
     container.innerHTML = `
       <div class="text-center py-16">
-        <p class="text-sm text-slate-500">No analyzed mentions yet.</p>
+        <p class="text-sm text-slate-500">No mentions yet.</p>
         <p class="text-xs text-slate-600 mt-1">New mentions will appear here once the analyzer processes them.</p>
       </div>
     `
@@ -634,6 +947,10 @@ async function loadMoreMentions() {
 }
 
 function backToDashboard() {
+  if (state.trendChart) {
+    state.trendChart.destroy()
+    state.trendChart = null
+  }
   state.currentTopicId = null
   navigate('dashboard')
 }
@@ -670,8 +987,7 @@ async function init() {
     return
   }
   try {
-    await loadUser()
-    await fetchTopics()
+    await Promise.all([loadUser(), fetchTopics(), fetchStats()])
     navigate('dashboard')
     connectWs()
   } catch {

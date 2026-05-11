@@ -159,6 +159,39 @@ class MentionAnalyzedEvent(BaseModel):
     entities: list[str] | None
     summary: str | None
     
+class TopicDigestRead(BaseModel):
+    """Topic digest returned to API clients."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    topic_id: UUID
+    summary: str | None
+    sentiment_distribution: dict | None
+    top_entities: list[str] | None
+    mention_count: int
+    generated_at: datetime
+
+
+class TrendPoint(BaseModel):
+    """Single bucket in a sentiment trend series."""
+    bucket: datetime
+    avg_score: float | None
+    count: int
+
+
+class TrendResponse(BaseModel):
+    """Paginated trend data for a topic."""
+    points: list[TrendPoint]
+    bucket: str
+    window: str
+
+
+class UserStats(BaseModel):
+    """Aggregate counts for the current user."""
+    topic_count: int
+    mention_count: int
+
+
 class IngestionJobEvent(BaseModel):
     """
     Published by scheduler to request that an ingester fetch new

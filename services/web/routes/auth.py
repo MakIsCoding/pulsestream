@@ -8,13 +8,13 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.db import get_db
-from shared.models import User
-from shared.schemas import TokenResponse, UserCreate, UserLogin, UserRead
+from shared.models import Mention, Topic, User
+from shared.schemas import TokenResponse, UserCreate, UserLogin, UserRead, UserStats
 
 from services.web.security.dependencies import get_current_user
 from shared.jwt import create_access_token
@@ -99,3 +99,27 @@ async def login(
 async def me(current_user: User = Depends(get_current_user)) -> User:
     """Return the currently authenticated user."""
     return current_user
+
+
+@router.get("/me/stats", response_model=UserStats)
+async def me_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> UserStats:
+    """Return aggregate topic and mention counts for the current user."""
+    topic_count = (
+        await db.execute(
+            select(func.count()).select_from(Topic).where(Topic.user_id == current_user.id)
+        )
+    ).scalar_one()
+
+    mention_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(Mention)
+            .join(Topic, Mention.topic_id == Topic.id)
+            .where(Topic.user_id == current_user.id)
+        )
+    ).scalar_one()
+
+    return UserStats(topic_count=topic_count, mention_count=mention_count)

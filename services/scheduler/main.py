@@ -20,10 +20,18 @@ with two concurrent loops:
 import asyncio
 import logging
 import signal
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from groq import AsyncGroq, APIStatusError
+from sqlalchemy import delete, select
+from tenacity import (
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from shared.config import settings
 from shared.db import AsyncSessionLocal, engine
@@ -34,8 +42,42 @@ from shared.kafka_client import (
     make_consumer,
     publish_event,
 )
-from shared.models import Topic
+from shared.models import Mention, Topic, TopicDigest
 from shared.schemas import IngestionJobEvent
+
+
+_groq_client: AsyncGroq | None = None
+
+
+def _get_groq_client() -> AsyncGroq:
+    global _groq_client
+    if _groq_client is None:
+        if not settings.groq_api_key:
+            raise RuntimeError("GROQ_API_KEY is not set")
+        _groq_client = AsyncGroq(api_key=settings.groq_api_key)
+    return _groq_client
+
+
+@retry(
+    retry=retry_if_not_exception_type(APIStatusError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+async def _call_groq_for_digest(topic_name: str, lines: list[str]) -> str:
+    client = _get_groq_client()
+    prompt = (
+        f'Summarize the following recent discussions about "{topic_name}" in 2-3 sentences.\n'
+        f"Focus on key themes, patterns, and notable viewpoints. Be concise and factual.\n\n"
+        + "\n".join(lines)
+    )
+    response = await client.chat.completions.create(
+        model=settings.groq_model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200,
+        temperature=0.3,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 logging.basicConfig(
@@ -74,8 +116,26 @@ class Scheduler:
             trigger="interval",
             seconds=settings.ingestion_interval_seconds,
             id="fan_out_ingestion",
-            max_instances=1,  # never overlap two ticks
-            coalesce=True,    # if backed up, run once instead of catching up
+            max_instances=1,
+            coalesce=True,
+        )
+        # Retention cleanup: delete mentions older than mention_retention_days.
+        self._aps.add_job(
+            self._cleanup_old_mentions,
+            trigger="interval",
+            hours=24,
+            id="retention_cleanup",
+            max_instances=1,
+            coalesce=True,
+        )
+        # Digest generation: summarise recent mentions every 6 hours.
+        self._aps.add_job(
+            self._generate_digests,
+            trigger="interval",
+            hours=6,
+            id="generate_digests",
+            max_instances=1,
+            coalesce=True,
         )
         self._aps.start()
         logger.info(
@@ -146,6 +206,99 @@ class Scheduler:
                 job.model_dump(mode="json"),
                 key=str(job.topic_id),
             )
+
+    async def _cleanup_old_mentions(self) -> None:
+        """Delete mentions older than `mention_retention_days` to cap storage."""
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=settings.mention_retention_days)
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    delete(Mention).where(Mention.ingested_at < cutoff)
+                )
+                await session.commit()
+            deleted = result.rowcount
+            if deleted:
+                logger.info(
+                    "Retention cleanup: removed %d mentions older than %d days",
+                    deleted,
+                    settings.mention_retention_days,
+                )
+        except Exception:
+            logger.exception("Error during retention cleanup")
+
+    async def _generate_digests(self) -> None:
+        """Generate or refresh digests for all active topics that have enough data."""
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Topic).where(Topic.is_active.is_(True))
+                )
+                topics = list(result.scalars().all())
+
+            for topic in topics:
+                try:
+                    await self._generate_digest_for_topic(topic)
+                except Exception:
+                    logger.exception("Digest failed for topic %s", topic.id)
+        except Exception:
+            logger.exception("Error during digest generation sweep")
+
+    async def _generate_digest_for_topic(self, topic: Topic) -> None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(Mention)
+                .where(
+                    Mention.topic_id == topic.id,
+                    Mention.analyzed_at.is_not(None),
+                    Mention.ingested_at >= cutoff,
+                )
+                .order_by(Mention.ingested_at.desc())
+                .limit(50)
+            )
+            mentions = list(result.scalars().all())
+
+        if len(mentions) < 3:
+            return  # not enough data to summarise
+
+        # Build sentiment distribution and top entities directly from the data.
+        dist: dict[str, int] = {"positive": 0, "negative": 0, "neutral": 0}
+        entity_freq: dict[str, int] = {}
+        for m in mentions:
+            if m.sentiment_label in dist:
+                dist[m.sentiment_label] += 1
+            for e in m.entities or []:
+                entity_freq[e] = entity_freq.get(e, 0) + 1
+
+        top_entities = sorted(entity_freq, key=entity_freq.__getitem__, reverse=True)[:10]
+
+        # Generate textual summary via Groq (best-effort — skip if no key).
+        summary: str | None = None
+        if settings.groq_api_key:
+            lines = [
+                f"- {(m.summary or m.title or '').strip()[:200]}"
+                for m in mentions[:20]
+                if (m.summary or m.title or "").strip()
+            ]
+            if lines:
+                try:
+                    summary = await _call_groq_for_digest(topic.name, lines)
+                except Exception:
+                    logger.warning("Groq digest call failed for topic %s; skipping summary", topic.id)
+
+        async with AsyncSessionLocal() as session:
+            digest = TopicDigest(
+                topic_id=topic.id,
+                summary=summary,
+                sentiment_distribution=dist,
+                top_entities=top_entities,
+                mention_count=len(mentions),
+            )
+            session.add(digest)
+            await session.commit()
+
+        logger.info("Digest generated for topic %s (%d mentions)", topic.id, len(mentions))
 
     async def _fan_out_ingestion_jobs(self) -> None:
         """

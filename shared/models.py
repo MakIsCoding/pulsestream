@@ -140,3 +140,32 @@ class Mention(Base):
 
     def __repr__(self) -> str:
         return f"<Mention id={self.id} source={self.source} ext={self.external_id}>"
+
+
+class TopicDigest(Base):
+    """
+    LLM-generated digest summarising recent mentions for a topic.
+    A new row is appended every ~6 hours; consumers read the latest one.
+    """
+
+    __tablename__ = "topic_digests"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    topic_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("topics.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sentiment_distribution: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    top_entities: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    mention_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<TopicDigest topic={self.topic_id} at={self.generated_at}>"

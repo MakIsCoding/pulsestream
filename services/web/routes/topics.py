@@ -17,19 +17,22 @@ Kafka so the scheduler can start ingesting for it.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import settings
 from shared.db import get_db
 from shared.kafka_client import publish_event
-from shared.models import Topic, User
+from shared.models import Topic, TopicDigest, User
 from shared.schemas import (
     TopicCreate,
     TopicCreatedEvent,
+    TopicDigestRead,
     TopicRead,
+    TrendPoint,
+    TrendResponse,
     TopicUpdate,
 )
 
@@ -141,6 +144,34 @@ async def update_topic(
     return topic
 
 
+@router.patch("/{topic_id}/pause", response_model=TopicRead)
+async def pause_topic(
+    topic_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Topic:
+    """Pause ingestion for a topic. The scheduler skips inactive topics."""
+    topic = await _load_owned_topic(db, topic_id, current_user.id)
+    topic.is_active = False
+    await db.commit()
+    await db.refresh(topic)
+    return topic
+
+
+@router.patch("/{topic_id}/resume", response_model=TopicRead)
+async def resume_topic(
+    topic_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Topic:
+    """Resume ingestion for a paused topic."""
+    topic = await _load_owned_topic(db, topic_id, current_user.id)
+    topic.is_active = True
+    await db.commit()
+    await db.refresh(topic)
+    return topic
+
+
 @router.delete("/{topic_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_topic(
     topic_id: UUID,
@@ -151,6 +182,61 @@ async def delete_topic(
     topic = await _load_owned_topic(db, topic_id, current_user.id)
     await db.delete(topic)
     await db.commit()
+
+
+@router.get("/{topic_id}/digest/latest", response_model=TopicDigestRead | None)
+async def get_latest_digest(
+    topic_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TopicDigest | None:
+    """Return the most recent digest for a topic, or null if none exist yet."""
+    await _load_owned_topic(db, topic_id, current_user.id)
+    result = await db.execute(
+        select(TopicDigest)
+        .where(TopicDigest.topic_id == topic_id)
+        .order_by(TopicDigest.generated_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+@router.get("/{topic_id}/trend", response_model=TrendResponse)
+async def get_topic_trend(
+    topic_id: UUID,
+    bucket: str = Query("hour", pattern="^(hour|day)$"),
+    window: str = Query("24h", pattern="^(24h|7d)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TrendResponse:
+    """Return avg sentiment bucketed by hour (default) or day over a rolling window."""
+    await _load_owned_topic(db, topic_id, current_user.id)
+
+    interval_map = {"24h": "24 hours", "7d": "7 days"}
+    interval = interval_map[window]
+
+    # date_trunc field arg must be a SQL literal, not a bind parameter.
+    # bucket is validated by the pattern= constraint above.
+    rows = (
+        await db.execute(
+            text(f"""
+                SELECT
+                    date_trunc('{bucket}', ingested_at) AS ts,
+                    AVG(sentiment_score)               AS avg_score,
+                    COUNT(*)::int                      AS cnt
+                FROM mentions
+                WHERE topic_id = :topic_id::uuid
+                  AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
+                  AND analyzed_at IS NOT NULL
+                GROUP BY 1
+                ORDER BY 1
+            """),
+            {"topic_id": str(topic_id), "interval": interval},
+        )
+    ).fetchall()
+
+    points = [TrendPoint(bucket=r[0], avg_score=r[1], count=r[2]) for r in rows]
+    return TrendResponse(points=points, bucket=bucket, window=window)
 
 
 # ----------------------------------------------------------------------
