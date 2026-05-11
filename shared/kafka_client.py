@@ -45,7 +45,7 @@ def _kafka_security_kwargs() -> dict:
         return {}
     return {
         "security_protocol": proto,
-        "sasl_mechanism": "SCRAM-SHA-256",
+        "sasl_mechanism": settings.kafka_sasl_mechanism,
         "sasl_plain_username": settings.kafka_sasl_username,
         "sasl_plain_password": settings.kafka_sasl_password,
     }

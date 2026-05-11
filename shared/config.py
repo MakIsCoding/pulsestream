@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # === Kafka ===
     kafka_bootstrap_servers: str = Field("kafka:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
     kafka_security_protocol: str = Field("PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
+    kafka_sasl_mechanism: str = Field("SCRAM-SHA-256", alias="KAFKA_SASL_MECHANISM")
     kafka_sasl_username: str = Field("", alias="KAFKA_SASL_USERNAME")
     kafka_sasl_password: str = Field("", alias="KAFKA_SASL_PASSWORD")
     kafka_topic_mentions_raw: str = Field("mentions.raw", alias="KAFKA_TOPIC_MENTIONS_RAW")
