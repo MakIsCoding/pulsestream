@@ -46,9 +46,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field("HS256", alias="JWT_ALGORITHM")
     jwt_expiry_hours: int = Field(24, alias="JWT_EXPIRY_HOURS")
 
-    # === AI (Google Gemini) ===
+    # === AI (Google Gemini — kept for fallback) ===
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
     gemini_model: str = Field("gemini-2.5-flash-lite", alias="GEMINI_MODEL")
+
+    # === AI (Groq — primary) ===
+    llm_provider: str = Field("groq", alias="LLM_PROVIDER")
+    groq_api_key: str = Field("", alias="GROQ_API_KEY")
+    groq_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
 
     # === Reddit (optional) ===
     reddit_client_id: str = Field("", alias="REDDIT_CLIENT_ID")

@@ -17,7 +17,7 @@ from shared.models import User
 from shared.schemas import TokenResponse, UserCreate, UserLogin, UserRead
 
 from services.web.security.dependencies import get_current_user
-from services.web.security.jwt import create_access_token
+from shared.jwt import create_access_token
 from services.web.security.passwords import hash_password, verify_password
 
 

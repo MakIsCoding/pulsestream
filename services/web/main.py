@@ -14,14 +14,17 @@ Run with:
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from shared.db import engine
+from shared.db import engine, Base
 from shared.kafka_client import close_producer, get_producer
 from shared.redis_client import close_redis, get_redis
+import shared.models  # noqa: F401 — registers all ORM classes with Base
 
 from services.web.routes import auth, mentions, topics
 
@@ -45,6 +48,10 @@ async def lifespan(app: FastAPI):
     leave Kafka producer batches unflushed.
     """
     logger.info("Starting up PulseStream Web API...")
+
+    # Create tables if they don't exist yet (idempotent — skips existing tables).
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
     # Warm up shared clients (lazy-init happens on first call;
     # we call them here so connection errors fail loudly at startup
@@ -107,13 +114,7 @@ async def healthz() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-@app.get("/", tags=["health"])
-async def root() -> JSONResponse:
-    """Friendly root endpoint."""
-    return JSONResponse(
-        {
-            "service": "pulsestream-web",
-            "version": "0.1.0",
-            "docs": "/docs",
-        }
-    )
+# Serve the frontend SPA. Must be mounted LAST so API routes take precedence.
+# html=True makes / resolve to index.html.
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

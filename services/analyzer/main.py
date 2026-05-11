@@ -28,19 +28,18 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from google import genai
-from google.genai import types as genai_types
+from groq import AsyncGroq, APIStatusError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
 
 from shared.config import settings
-from shared.db import AsyncSessionLocal, engine
+from shared.db import AsyncSessionLocal, Base, engine
 from shared.kafka_client import (
     close_producer,
     deserialize_event,
@@ -64,17 +63,17 @@ BATCH_FLUSH_SECONDS = 5.0
 
 
 _stop_event = asyncio.Event()
-_genai_client: genai.Client | None = None
+_groq_client: AsyncGroq | None = None
 
 
-def _get_genai_client() -> genai.Client:
-    """Lazy-initialize the Gemini client."""
-    global _genai_client
-    if _genai_client is None:
-        if not settings.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY is not set in env")
-        _genai_client = genai.Client(api_key=settings.gemini_api_key)
-    return _genai_client
+def _get_groq_client() -> AsyncGroq:
+    """Lazy-initialize the Groq client."""
+    global _groq_client
+    if _groq_client is None:
+        if not settings.groq_api_key:
+            raise RuntimeError("GROQ_API_KEY is not set in env")
+        _groq_client = AsyncGroq(api_key=settings.groq_api_key)
+    return _groq_client
 
 
 # ----------------------------------------------------------------------
@@ -82,8 +81,8 @@ def _get_genai_client() -> genai.Client:
 # ----------------------------------------------------------------------
 
 ANALYSIS_PROMPT = """\
-You will be given a list of social/news posts. For EACH post, return a JSON
-object with these fields:
+You will be given a list of social/news posts. For EACH post, produce a JSON
+analysis with these fields:
 
 - sentiment_score: a float in [-1.0, 1.0] where -1 is very negative, 0
   is neutral, +1 is very positive.
@@ -92,16 +91,21 @@ object with these fields:
   technologies). Up to 10 entries, no duplicates. Lowercase.
 - summary: a single sentence (<=200 chars) capturing what the post is about.
 
-Return ONLY a JSON array, one object per input post, in the SAME ORDER as
-the input. No prose, no markdown fences. If you cannot analyze a post,
-return null for that slot in the array.
+Respond with a single JSON object of the form:
+{"results": [<analysis for post 1>, <analysis for post 2>, ...]}
+
+Keep the order matching the input. If you cannot analyze a post, use null
+for that slot. No prose, no markdown fences — just the JSON object.
 
 Posts to analyze:
 """
 
 
 @retry(
-    retry=retry_if_exception_type(Exception),
+    # Retry on transient errors only (network, timeouts).
+    # Never retry on Groq HTTP errors (4xx rate limit, auth, bad request;
+    # 5xx will also fail fast — better to drop the batch than burn quota).
+    retry=retry_if_not_exception_type(APIStatusError),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
@@ -110,10 +114,10 @@ async def _analyze_batch(
     posts: list[dict[str, Any]],
 ) -> list[dict[str, Any] | None]:
     """
-    Send a batch to Gemini, return one analysis dict per input post
+    Send a batch to Groq, return one analysis dict per input post
     (or None for posts we couldn't analyze).
     """
-    client = _get_genai_client()
+    client = _get_groq_client()
 
     # Build a compact representation of each post for the prompt.
     formatted = []
@@ -127,31 +131,35 @@ async def _analyze_batch(
 
     prompt = ANALYSIS_PROMPT + "\n\n".join(formatted)
 
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.gemini_model,
-        contents=prompt,
-        config=genai_types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.2,
-        ),
+    response = await client.chat.completions.create(
+        model=settings.groq_model,
+        messages=[
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
     )
 
-    raw = response.text or "[]"
+    raw = response.choices[0].message.content or "{}"
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Gemini returned non-JSON; raw=%r", raw[:200])
+        logger.warning("Groq returned non-JSON; raw=%r", raw[:200])
         return [None] * len(posts)
 
-    if not isinstance(parsed, list):
-        logger.warning("Gemini did not return a list; got %s", type(parsed).__name__)
+    if not isinstance(parsed, dict):
+        logger.warning("Groq did not return a JSON object; got %s", type(parsed).__name__)
+        return [None] * len(posts)
+
+    results = parsed.get("results")
+    if not isinstance(results, list):
+        logger.warning("Groq response missing 'results' list; got %r", parsed)
         return [None] * len(posts)
 
     # Pad/trim to match input length.
-    if len(parsed) < len(posts):
-        parsed += [None] * (len(posts) - len(parsed))
-    return parsed[: len(posts)]
+    if len(results) < len(posts):
+        results += [None] * (len(posts) - len(results))
+    return results[: len(posts)]
 
 
 # ----------------------------------------------------------------------
@@ -257,7 +265,7 @@ async def _process_batch(batch: list[dict[str, Any]]) -> None:
     if not batch:
         return
 
-    logger.info("Analyzing batch of %d mention(s) via Gemini...", len(batch))
+    logger.info("Analyzing batch of %d mention(s) via Groq (%s)...", len(batch), settings.groq_model)
     try:
         analyses = await _analyze_batch(batch)
     except Exception:
@@ -317,6 +325,9 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _stop_event.set)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
     await get_producer()  # warm up
 

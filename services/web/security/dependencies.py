@@ -17,8 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.db import get_db
 from shared.models import User
-from services.web.security.jwt import decode_access_token, InvalidTokenError
-
+from shared.jwt import decode_access_token, InvalidTokenError
 
 # tokenUrl points to the login endpoint. FastAPI uses this to render the
 # "Authorize" button correctly in the auto-generated /docs UI.
