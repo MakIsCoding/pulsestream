@@ -221,9 +221,9 @@ async def get_topic_trend(
         await db.execute(
             text(f"""
                 SELECT
-                    date_trunc('{bucket}', ingested_at) AS ts,
-                    AVG(sentiment_score)               AS avg_score,
-                    COUNT(*)::int                      AS cnt
+                    date_trunc('{bucket}', ingested_at)  AS ts,
+                    AVG(sentiment_score)                 AS avg_score,
+                    CAST(COUNT(*) AS INTEGER)            AS cnt
                 FROM mentions
                 WHERE topic_id = CAST(:topic_id AS uuid)
                   AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
@@ -239,8 +239,9 @@ async def get_topic_trend(
     src_rows = (
         await db.execute(
             text("""
-                SELECT source, COUNT(*)::int AS cnt,
-                       AVG(sentiment_score) AS avg_score
+                SELECT source,
+                       CAST(COUNT(*) AS INTEGER)  AS cnt,
+                       AVG(sentiment_score)       AS avg_score
                 FROM mentions
                 WHERE topic_id = CAST(:topic_id AS uuid)
                   AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
@@ -253,13 +254,16 @@ async def get_topic_trend(
 
     sources = {r[0]: r[1] for r in src_rows}
     total = sum(r[1] for r in src_rows)
-    # Weighted average sentiment across all sources.
+    # Weighted average sentiment — cast to float so Pydantic never sees Decimal.
     avg_sentiment: float | None = None
     if total:
-        weighted = sum((r[2] or 0) * r[1] for r in src_rows)
+        weighted = sum((float(r[2]) if r[2] is not None else 0.0) * r[1] for r in src_rows)
         avg_sentiment = weighted / total
 
-    points = [TrendPoint(bucket=r[0], avg_score=r[1], count=r[2]) for r in rows]
+    points = [
+        TrendPoint(bucket=r[0], avg_score=float(r[1]) if r[1] is not None else None, count=r[2])
+        for r in rows
+    ]
     return TrendResponse(
         points=points, bucket=bucket, window=window,
         total=total, avg_sentiment=avg_sentiment, sources=sources,

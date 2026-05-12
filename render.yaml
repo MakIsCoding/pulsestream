@@ -50,6 +50,6 @@ services:
       - key: LLM_PROVIDER
         value: groq
       - key: INGESTION_INTERVAL_SECONDS
-        value: "300"
+        value: "120"
       - key: MENTION_RETENTION_DAYS
         value: "30"
