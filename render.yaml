@@ -6,7 +6,7 @@ services:
     dockerContext: .
     plan: free
     healthCheckPath: /healthz
-    autoDeploy: false
+    autoDeploy: true
     envVars:
       # Render injects PORT automatically — the Dockerfile CMD already uses it.
       # Add all your secrets in the Render dashboard (Settings → Environment).
