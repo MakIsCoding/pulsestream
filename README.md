@@ -12,7 +12,7 @@ Real-time topic intelligence platform. Track any subject across HackerNews and R
 2. Every **2 minutes**, PulseStream fetches matching posts from HackerNews and Reddit
 3. Each post is analyzed by **Groq AI** — sentiment score, named entities, one-line summary
 4. Results appear in your dashboard **live** via WebSocket, no refresh needed
-5. A **Trend** tab shows volume and sentiment over time; a **Summary** tab shows an AI-generated digest of the last 24 hours
+5. A **Trend** tab shows volume and sentiment over time; a **Summary** tab shows an AI-generated digest — generated on demand the moment you open the tab
 
 ---
 
@@ -32,7 +32,7 @@ Browser
 │  │                                                          │ │
 │  │  Scheduler  ──every 2 min──► Kafka: ingestion.jobs       │ │
 │  │             ◄── Kafka: topics.created (immediate ingest) │ │
-│  │             runs digest generation every 6 h             │ │
+│  │             runs digest generation every 1 h (fallback)  │ │
 │  │                                                          │ │
 │  │  Ingester   ◄── Kafka: ingestion.jobs                    │ │
 │  │             ├── HackerNews Algolia API                   │ │
@@ -112,7 +112,7 @@ User creates topic
 - **Sentiment analysis** — every post scored −1.0 → +1.0 with a label
 - **Entity extraction** — people, products, companies pulled from each post
 - **Trend chart** — volume bars + sentiment line over 24 h or 7 days
-- **AI digest** — Groq-generated 2–3 sentence summary refreshed every 6 hours
+- **AI digest** — Groq-generated 2–3 sentence summary, triggered on demand when you open the Summary tab (refreshes if older than 30 minutes)
 - **Pause / resume** — stop ingestion for a topic without deleting it
 - **Inactive user throttle** — ingestion pauses 15 min after you leave the page, preventing runaway API usage
 - **Deduplication** — 7-day Redis cache prevents re-analyzing the same post

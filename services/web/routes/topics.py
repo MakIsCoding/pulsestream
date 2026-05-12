@@ -15,9 +15,10 @@ Side effect: creating a topic publishes a `topics.created` event to
 Kafka so the scheduler can start ingesting for it.
 """
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -187,18 +188,34 @@ async def delete_topic(
 @router.get("/{topic_id}/digest/latest", response_model=TopicDigestRead | None)
 async def get_latest_digest(
     topic_id: UUID,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TopicDigest | None:
-    """Return the most recent digest for a topic, or null if none exist yet."""
-    await _load_owned_topic(db, topic_id, current_user.id)
+    """Return the most recent digest; regenerate in background if stale or missing."""
+    topic = await _load_owned_topic(db, topic_id, current_user.id)
     result = await db.execute(
         select(TopicDigest)
         .where(TopicDigest.topic_id == topic_id)
         .order_by(TopicDigest.generated_at.desc())
         .limit(1)
     )
-    return result.scalar_one_or_none()
+    digest = result.scalar_one_or_none()
+
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    if digest is None or digest.generated_at < stale_cutoff:
+        background_tasks.add_task(_regenerate_digest, topic)
+
+    return digest
+
+
+async def _regenerate_digest(topic: Topic) -> None:
+    """Background task: generate a fresh digest for a topic if enough data exists."""
+    try:
+        from services.scheduler.main import Scheduler
+        await Scheduler()._generate_digest_for_topic(topic)
+    except Exception:
+        pass
 
 
 @router.get("/{topic_id}/trend", response_model=TrendResponse)

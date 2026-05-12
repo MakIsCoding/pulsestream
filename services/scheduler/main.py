@@ -90,7 +90,7 @@ logger = logging.getLogger("pulsestream.scheduler")
 
 # Sources we'll fan out ingestion jobs to. The ingester service
 # subscribes to ingestion.jobs and routes by `source`.
-INGESTION_SOURCES = ["hackernews", "reddit"]
+INGESTION_SOURCES = ["hackernews", "reddit", "google_news", "devto"]
 
 
 class Scheduler:

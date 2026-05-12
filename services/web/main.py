@@ -62,7 +62,7 @@ async def _run_scheduler() -> None:
     )
     sched._aps.add_job(
         sched._generate_digests, trigger="interval",
-        hours=6, id="generate_digests", max_instances=1, coalesce=True,
+        hours=1, id="generate_digests", max_instances=1, coalesce=True,
         next_run_time=datetime.now(timezone.utc),
     )
     sched._aps.add_job(

@@ -211,6 +211,14 @@ async function refreshSummary(topicId) {
   try {
     const d = await fetchDigest(topicId)
     renderDigestCard(d)
+    // Digest is being generated in background — retry once after 12s
+    if (!d) {
+      setTimeout(() => {
+        if (state.currentTopicId === topicId && state.insightTab === 'summary') {
+          refreshSummary(topicId)
+        }
+      }, 12000)
+    }
   } catch {}
 }
 
@@ -821,7 +829,14 @@ function renderDigestCard(digest) {
   const section = document.getElementById('digest-section')
   if (!section) return
   if (!digest) {
-    section.innerHTML = `<p class="text-xs text-slate-600 text-center py-4">No summary yet — check back after a few ingestion cycles.</p>`
+    section.innerHTML = `
+      <div class="text-center py-4">
+        <svg class="w-4 h-4 animate-spin text-slate-600 mx-auto mb-2" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        <p class="text-xs text-slate-500">Generating summary…</p>
+      </div>`
     return
   }
 

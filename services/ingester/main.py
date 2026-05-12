@@ -30,7 +30,7 @@ from shared.kafka_client import (
 )
 from shared.redis_client import close_redis, get_redis
 
-from services.ingester.sources import hackernews, reddit
+from services.ingester.sources import devto, google_news, hackernews, reddit
 
 
 logging.basicConfig(
@@ -47,6 +47,8 @@ FetchFunc = Callable[[list[str], int], Awaitable[list[dict[str, Any]]]]
 SOURCE_REGISTRY: dict[str, FetchFunc] = {
     "hackernews": hackernews.fetch,
     "reddit": reddit.fetch,
+    "google_news": google_news.fetch,
+    "devto": devto.fetch,
 }
 
 # Dedup TTL: 7 days. Long enough to cover repeated keyword hits;
