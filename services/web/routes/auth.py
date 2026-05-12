@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.db import get_db
 from shared.models import Mention, Topic, User
+from shared.redis_client import get_redis
 from shared.schemas import TokenResponse, UserCreate, UserLogin, UserRead, UserStats
 
 from services.web.security.dependencies import get_current_user
@@ -93,6 +94,13 @@ async def login(
 
     token = create_access_token(user.id)
     return TokenResponse(access_token=token)
+
+
+@router.post("/heartbeat", status_code=status.HTTP_204_NO_CONTENT)
+async def heartbeat(current_user: User = Depends(get_current_user)) -> None:
+    """Marks the user as active. Scheduler only ingests for users active in the last 15 min."""
+    redis = await get_redis()
+    await redis.set(f"user:active:{current_user.id}", "1", ex=900)
 
 
 @router.get("/me", response_model=UserRead)

@@ -26,7 +26,7 @@ from shared.kafka_client import close_producer, get_producer
 from shared.redis_client import close_redis, get_redis
 import shared.models  # noqa: F401 — registers all ORM classes with Base
 
-from services.web.routes import auth, mentions, topics
+from services.web.routes import auth, config, mentions, topics
 
 
 logging.basicConfig(
@@ -95,6 +95,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(topics.router)
 app.include_router(mentions.router)
+app.include_router(config.router)
 
 
 # ----------------------------------------------------------------------

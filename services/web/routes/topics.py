@@ -225,7 +225,7 @@ async def get_topic_trend(
                     AVG(sentiment_score)               AS avg_score,
                     COUNT(*)::int                      AS cnt
                 FROM mentions
-                WHERE topic_id = :topic_id::uuid
+                WHERE topic_id = CAST(:topic_id AS uuid)
                   AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
                   AND analyzed_at IS NOT NULL
                 GROUP BY 1
@@ -235,8 +235,35 @@ async def get_topic_trend(
         )
     ).fetchall()
 
+    # Source breakdown and overall stats for the same window.
+    src_rows = (
+        await db.execute(
+            text("""
+                SELECT source, COUNT(*)::int AS cnt,
+                       AVG(sentiment_score) AS avg_score
+                FROM mentions
+                WHERE topic_id = CAST(:topic_id AS uuid)
+                  AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
+                  AND analyzed_at IS NOT NULL
+                GROUP BY source
+            """),
+            {"topic_id": str(topic_id), "interval": interval},
+        )
+    ).fetchall()
+
+    sources = {r[0]: r[1] for r in src_rows}
+    total = sum(r[1] for r in src_rows)
+    # Weighted average sentiment across all sources.
+    avg_sentiment: float | None = None
+    if total:
+        weighted = sum((r[2] or 0) * r[1] for r in src_rows)
+        avg_sentiment = weighted / total
+
     points = [TrendPoint(bucket=r[0], avg_score=r[1], count=r[2]) for r in rows]
-    return TrendResponse(points=points, bucket=bucket, window=window)
+    return TrendResponse(
+        points=points, bucket=bucket, window=window,
+        total=total, avg_sentiment=avg_sentiment, sources=sources,
+    )
 
 
 # ----------------------------------------------------------------------

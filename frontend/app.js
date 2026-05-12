@@ -1,8 +1,5 @@
 'use strict'
 
-// ─── Config ────────────────────────────────────────────────────────────────────
-const WS_PORT = 8001
-
 // ─── State ─────────────────────────────────────────────────────────────────────
 const state = {
   token: localStorage.getItem('ps_token') || null,
@@ -17,7 +14,41 @@ const state = {
   newMentionIds: new Set(),
   stats: { topic_count: 0, mention_count: 0 },
   trendChart: null,
+  wsUrl: null,
 }
+
+// ─── Runtime Config ────────────────────────────────────────────────────────────
+async function fetchConfig() {
+  try {
+    const data = await fetch('/api/config').then(r => r.json())
+    state.wsUrl = data.ws_url
+  } catch {
+    state.wsUrl = `ws://${window.location.hostname}:8001`
+  }
+}
+
+// ─── Heartbeat ─────────────────────────────────────────────────────────────────
+let _heartbeatTimer = null
+
+async function sendHeartbeat() {
+  if (!state.token) return
+  api('/auth/heartbeat', { method: 'POST' }).catch(() => {})
+}
+
+function startHeartbeat() {
+  sendHeartbeat()
+  if (_heartbeatTimer) clearInterval(_heartbeatTimer)
+  _heartbeatTimer = setInterval(sendHeartbeat, 5 * 60 * 1000)
+}
+
+function stopHeartbeat() {
+  if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null }
+}
+
+// Re-send heartbeat immediately when user comes back to the tab
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.token) sendHeartbeat()
+})
 
 // ─── API Helper ────────────────────────────────────────────────────────────────
 async function api(path, opts = {}) {
@@ -42,8 +73,9 @@ async function login(email, password) {
   if (!data) return
   state.token = data.access_token
   localStorage.setItem('ps_token', state.token)
-  await Promise.all([loadUser(), fetchTopics(), fetchStats()])
+  await Promise.all([loadUser(), fetchTopics(), fetchStats(), fetchConfig()])
   navigate('dashboard')
+  startHeartbeat()
   connectWs()
 }
 
@@ -55,12 +87,14 @@ async function register(email, password) {
   if (!data) return
   state.token = data.access_token
   localStorage.setItem('ps_token', state.token)
-  await Promise.all([loadUser(), fetchTopics(), fetchStats()])
+  await Promise.all([loadUser(), fetchTopics(), fetchStats(), fetchConfig()])
   navigate('dashboard')
+  startHeartbeat()
   connectWs()
 }
 
 function logout() {
+  stopHeartbeat()
   state.token = null
   state.user = null
   state.topics = []
@@ -159,7 +193,7 @@ async function fetchTrend(topicId, bucket = 'hour', window = '24h') {
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWs() {
   if (state.ws || !state.token) return
-  const url = `ws://${window.location.hostname}:${WS_PORT}/ws?token=${state.token}`
+  const url = `${state.wsUrl}/ws?token=${state.token}`
   const ws = new WebSocket(url)
 
   ws.onopen = () => {
@@ -631,24 +665,37 @@ function renderTopicPage(topicId) {
         </div>
       </div>
 
-      <!-- Sentiment trend chart -->
-      <div id="trend-section" class="mb-5 bg-slate-800/70 border border-slate-700 rounded-2xl p-4">
-        <div class="flex items-center justify-between mb-2">
-          <p class="text-xs font-medium text-slate-400">24h Sentiment Trend</p>
-          <div class="flex items-center gap-1.5 text-xs text-slate-600">
-            <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>avg score
+      <!-- Insights tabs: Trend / Summary -->
+      <div class="mb-5 bg-slate-800/70 border border-slate-700 rounded-2xl overflow-hidden">
+        <div class="flex border-b border-slate-700">
+          <button onclick="switchInsightTab('trend')" id="tab-btn-trend"
+            class="flex-1 py-2.5 text-xs font-semibold transition-colors text-indigo-400 border-b-2 border-indigo-500">
+            Trend
+          </button>
+          <button onclick="switchInsightTab('summary')" id="tab-btn-summary"
+            class="flex-1 py-2.5 text-xs font-semibold transition-colors text-slate-500 border-b-2 border-transparent hover:text-slate-300">
+            Summary
+          </button>
+        </div>
+
+        <div id="trend-section" class="p-4">
+          <div class="h-20 flex items-center justify-center">
+            <svg class="w-4 h-4 animate-spin text-slate-600" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
           </div>
         </div>
-        <div class="h-20 flex items-center justify-center">
-          <svg class="w-4 h-4 animate-spin text-slate-600" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-          </svg>
+
+        <div id="digest-section" class="p-4 hidden">
+          <div class="h-12 flex items-center justify-center">
+            <svg class="w-4 h-4 animate-spin text-slate-600" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+          </div>
         </div>
       </div>
-
-      <!-- Digest card -->
-      <div id="digest-section" class="mb-5"></div>
 
       <!-- Mentions feed -->
       <div id="mentions-feed">
@@ -720,11 +767,32 @@ async function topicDetailPause(id) {
   }
 }
 
+// ─── Insight Tab Switcher ──────────────────────────────────────────────────────
+function switchInsightTab(tab) {
+  const trendBtn = document.getElementById('tab-btn-trend')
+  const summaryBtn = document.getElementById('tab-btn-summary')
+  const trendSection = document.getElementById('trend-section')
+  const digestSection = document.getElementById('digest-section')
+  if (!trendBtn) return
+  const active = 'flex-1 py-2.5 text-xs font-semibold transition-colors text-indigo-400 border-b-2 border-indigo-500'
+  const inactive = 'flex-1 py-2.5 text-xs font-semibold transition-colors text-slate-500 border-b-2 border-transparent hover:text-slate-300'
+  if (tab === 'trend') {
+    trendBtn.className = active; summaryBtn.className = inactive
+    trendSection.classList.remove('hidden'); digestSection.classList.add('hidden')
+  } else {
+    summaryBtn.className = active; trendBtn.className = inactive
+    digestSection.classList.remove('hidden'); trendSection.classList.add('hidden')
+  }
+}
+
 // ─── Digest Card ───────────────────────────────────────────────────────────────
 function renderDigestCard(digest) {
   const section = document.getElementById('digest-section')
   if (!section) return
-  if (!digest) { section.innerHTML = ''; return }
+  if (!digest) {
+    section.innerHTML = `<p class="text-xs text-slate-600 text-center py-4">No summary yet — check back after a few ingestion cycles.</p>`
+    return
+  }
 
   const dist = digest.sentiment_distribution || {}
   const total = (dist.positive || 0) + (dist.negative || 0) + (dist.neutral || 0)
@@ -732,11 +800,10 @@ function renderDigestCard(digest) {
   const posP = pct(dist.positive || 0)
   const neuP = pct(dist.neutral || 0)
   const negP = pct(dist.negative || 0)
-
   const entities = (digest.top_entities || []).slice(0, 8)
 
   section.innerHTML = `
-    <div class="bg-slate-800/70 border border-slate-700 rounded-2xl p-5 fade-in">
+    <div class="fade-in">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm font-semibold text-white">What people are saying</h3>
         <span class="text-xs text-slate-600">${digest.mention_count} mentions · ${timeAgo(digest.generated_at)}</span>
@@ -744,7 +811,7 @@ function renderDigestCard(digest) {
 
       ${digest.summary
         ? `<p class="text-sm text-slate-300 leading-relaxed mb-4">${escHtml(digest.summary)}</p>`
-        : ''}
+        : '<p class="text-xs text-slate-500 mb-4">Summary generating…</p>'}
 
       ${total > 0 ? `
         <div class="mb-4">
@@ -781,61 +848,112 @@ function renderTrendChart(trend) {
   const section = document.getElementById('trend-section')
   if (!section) return
 
-  if (!trend || !trend.points || trend.points.length < 2) {
-    section.innerHTML = `
-      <div class="flex items-center justify-between mb-2">
-        <p class="text-xs font-medium text-slate-400">24h Sentiment Trend</p>
-      </div>
-      <p class="text-xs text-slate-600 text-center py-3">Not enough data yet — check back after a few ingestion cycles</p>
-    `
+  if (!trend || !trend.total === undefined) {
+    section.innerHTML = `<p class="text-xs text-slate-600 text-center py-4">Not enough data yet — check back after a few ingestion cycles</p>`
     return
   }
 
-  // Replace spinner with canvas.
+  const sentLabel = trend.avg_sentiment == null ? 'no data'
+    : trend.avg_sentiment > 0.2 ? 'positive'
+    : trend.avg_sentiment < -0.2 ? 'negative' : 'neutral'
+  const sentColor = sentLabel === 'positive' ? 'text-green-400'
+    : sentLabel === 'negative' ? 'text-red-400' : 'text-slate-400'
+  const sentScore = trend.avg_sentiment != null
+    ? `${trend.avg_sentiment >= 0 ? '+' : ''}${trend.avg_sentiment.toFixed(2)}` : '—'
+
+  const sources = trend.sources || {}
+  const srcTotal = Object.values(sources).reduce((a, b) => a + b, 0)
+  const srcBars = Object.entries(sources)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => {
+      const pct = srcTotal ? Math.round((count / srcTotal) * 100) : 0
+      const color = name === 'hackernews' ? 'bg-orange-500' : 'bg-blue-500'
+      return `
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-500 w-20 shrink-0 capitalize">${name === 'hackernews' ? 'Hacker News' : name}</span>
+          <div class="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+            <div class="${color} h-full rounded-full" style="width:${pct}%"></div>
+          </div>
+          <span class="text-xs text-slate-500 w-8 text-right">${count}</span>
+        </div>`
+    }).join('')
+
   section.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
-      <p class="text-xs font-medium text-slate-400">24h Sentiment Trend</p>
-      <div class="flex items-center gap-1.5 text-xs text-slate-600">
-        <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>avg score
+    <div class="flex gap-3 mb-4">
+      <div class="flex-1 bg-slate-700/40 rounded-xl p-3 text-center">
+        <p class="text-lg font-bold text-white">${trend.total}</p>
+        <p class="text-xs text-slate-500 mt-0.5">mentions</p>
+      </div>
+      <div class="flex-1 bg-slate-700/40 rounded-xl p-3 text-center">
+        <p class="text-lg font-bold ${sentColor}">${sentScore}</p>
+        <p class="text-xs text-slate-500 mt-0.5">${sentLabel}</p>
+      </div>
+      <div class="flex-1 bg-slate-700/40 rounded-xl p-3 text-center">
+        <p class="text-lg font-bold text-white">${Object.keys(sources).length}</p>
+        <p class="text-xs text-slate-500 mt-0.5">sources</p>
       </div>
     </div>
-    <div class="h-20"><canvas id="trend-chart"></canvas></div>
+
+    ${trend.points.length > 0 ? `
+      <div class="mb-3">
+        <p class="text-xs text-slate-500 mb-1.5">Volume &amp; sentiment over time</p>
+        <div class="h-24"><canvas id="trend-chart"></canvas></div>
+      </div>
+    ` : '<p class="text-xs text-slate-600 text-center py-2 mb-3">Chart available after more data accumulates</p>'}
+
+    ${srcBars ? `
+      <div>
+        <p class="text-xs text-slate-500 mb-2">Sources</p>
+        <div class="flex flex-col gap-1.5">${srcBars}</div>
+      </div>
+    ` : ''}
   `
 
-  if (typeof Chart === 'undefined') return
+  if (typeof Chart === 'undefined' || !trend.points.length) return
 
   const canvas = document.getElementById('trend-chart')
+  if (!canvas) return
   const labels = trend.points.map(p => {
     const d = new Date(p.bucket)
     return `${d.getHours().toString().padStart(2, '0')}:00`
   })
-  const scores = trend.points.map(p => p.avg_score != null ? parseFloat(p.avg_score.toFixed(2)) : 0)
+  const counts = trend.points.map(p => p.count)
+  const scores = trend.points.map(p => p.avg_score != null ? parseFloat(p.avg_score.toFixed(2)) : null)
 
   state.trendChart = new Chart(canvas, {
-    type: 'line',
     data: {
       labels,
-      datasets: [{
-        data: scores,
-        borderColor: '#818cf8',
-        backgroundColor: ctx => {
-          const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 80)
-          g.addColorStop(0, 'rgba(129,140,248,0.25)')
-          g.addColorStop(1, 'rgba(129,140,248,0)')
-          return g
+      datasets: [
+        {
+          type: 'bar',
+          label: 'Mentions',
+          data: counts,
+          backgroundColor: 'rgba(99,102,241,0.25)',
+          borderColor: 'rgba(99,102,241,0.5)',
+          borderWidth: 1,
+          borderRadius: 3,
+          yAxisID: 'yVol',
         },
-        borderWidth: 2,
-        fill: true,
-        tension: 0.4,
-        pointBackgroundColor: '#818cf8',
-        pointRadius: 3,
-        pointHoverRadius: 4,
-      }]
+        {
+          type: 'line',
+          label: 'Sentiment',
+          data: scores,
+          borderColor: '#34d399',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          tension: 0.4,
+          pointBackgroundColor: '#34d399',
+          pointRadius: 3,
+          pointHoverRadius: 4,
+          spanGaps: true,
+          yAxisID: 'ySent',
+        }
+      ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 400 },
+      animation: { duration: 300 },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -844,21 +962,21 @@ function renderTrendChart(trend) {
           borderWidth: 1,
           titleColor: '#94a3b8',
           bodyColor: '#e2e8f0',
-          callbacks: {
-            label: ctx => ` ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}`
-          }
         }
       },
       scales: {
-        x: {
+        x: { grid: { color: '#1e293b' }, ticks: { color: '#475569', font: { size: 10 }, maxTicksLimit: 8 } },
+        yVol: {
+          position: 'left',
           grid: { color: '#1e293b' },
-          ticks: { color: '#475569', font: { size: 10 }, maxTicksLimit: 8 },
+          ticks: { color: '#475569', font: { size: 10 }, maxTicksLimit: 4 },
+          beginAtZero: true,
         },
-        y: {
-          min: -1,
-          max: 1,
-          grid: { color: '#1e293b' },
-          ticks: { color: '#475569', font: { size: 10 }, callback: v => v.toFixed(1) }
+        ySent: {
+          position: 'right',
+          min: -1, max: 1,
+          grid: { drawOnChartArea: false },
+          ticks: { color: '#34d399', font: { size: 10 }, callback: v => v.toFixed(1) },
         }
       }
     }
@@ -987,11 +1105,15 @@ async function init() {
     return
   }
   try {
-    await Promise.all([loadUser(), fetchTopics(), fetchStats()])
+    await Promise.all([loadUser(), fetchTopics(), fetchStats(), fetchConfig()])
+    if (!state.token) return  // 401 inside api() already called logout()
     navigate('dashboard')
+    startHeartbeat()
     connectWs()
   } catch {
-    logout()
+    // Don't call logout() on transient errors — the token stays valid.
+    // If it was a real 401, api() already called logout() above.
+    navigate('login')
   }
 }
 

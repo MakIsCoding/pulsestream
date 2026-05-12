@@ -25,7 +25,7 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from groq import AsyncGroq, APIStatusError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from tenacity import (
     retry,
     retry_if_not_exception_type,
@@ -42,6 +42,7 @@ from shared.kafka_client import (
     make_consumer,
     publish_event,
 )
+from shared.redis_client import get_redis
 from shared.models import Mention, Topic, TopicDigest
 from shared.schemas import IngestionJobEvent
 
@@ -128,12 +129,23 @@ class Scheduler:
             max_instances=1,
             coalesce=True,
         )
-        # Digest generation: summarise recent mentions every 6 hours.
+        # Digest generation: summarise recent mentions every 6 hours, and immediately on startup.
         self._aps.add_job(
             self._generate_digests,
             trigger="interval",
             hours=6,
             id="generate_digests",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        # Keep-alive: ping Neon, Redis, and Kafka every 6 h so free-tier
+        # services don't pause or get deleted due to inactivity.
+        self._aps.add_job(
+            self._keep_alive_ping,
+            trigger="interval",
+            hours=6,
+            id="keep_alive",
             max_instances=1,
             coalesce=True,
         )
@@ -300,6 +312,35 @@ class Scheduler:
 
         logger.info("Digest generated for topic %s (%d mentions)", topic.id, len(mentions))
 
+    async def _keep_alive_ping(self) -> None:
+        """Ping Neon, Redis, and Kafka every 6 h to prevent free-tier inactivity pauses."""
+        # Neon Postgres
+        try:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text("SELECT 1"))
+            logger.info("Keep-alive: Neon OK")
+        except Exception:
+            logger.warning("Keep-alive: Neon ping failed", exc_info=True)
+
+        # Upstash Redis
+        try:
+            redis = await get_redis()
+            await redis.ping()
+            logger.info("Keep-alive: Redis OK")
+        except Exception:
+            logger.warning("Keep-alive: Redis ping failed", exc_info=True)
+
+        # Aiven Kafka — heartbeat message that consumers silently skip
+        try:
+            await publish_event(
+                settings.kafka_topic_mentions_analyzed,
+                {"type": "heartbeat"},
+                key="heartbeat",
+            )
+            logger.info("Keep-alive: Kafka OK")
+        except Exception:
+            logger.warning("Keep-alive: Kafka heartbeat failed", exc_info=True)
+
     async def _fan_out_ingestion_jobs(self) -> None:
         """
         Runs every INGESTION_INTERVAL_SECONDS. Reads all active topics
@@ -316,14 +357,20 @@ class Scheduler:
                 logger.info("No active topics. Skipping fan-out.")
                 return
 
+            redis = await get_redis()
             count = 0
+            skipped = 0
             for topic in topics:
+                # Only ingest for users who have been on the page in the last 15 min.
+                if not await redis.exists(f"user:active:{topic.user_id}"):
+                    skipped += 1
+                    continue
                 event = IngestionJobEvent(
                     topic_id=topic.id,
                     user_id=topic.user_id,
                     name=topic.name,
                     keywords=topic.keywords,
-                    source="",  # set per source below
+                    source="",
                 )
                 for source in INGESTION_SOURCES:
                     event_dict = event.model_dump(mode="json")
@@ -335,10 +382,12 @@ class Scheduler:
                     )
                     count += 1
 
+            if skipped:
+                logger.info("Skipped %d topic(s) — user(s) inactive.", skipped)
             logger.info(
-                "Fan-out complete: %d ingestion jobs published for %d topic(s).",
+                "Fan-out complete: %d ingestion jobs for %d active topic(s).",
                 count,
-                len(topics),
+                len(topics) - skipped,
             )
         except Exception:
             # Don't let a single failed tick kill the scheduler.

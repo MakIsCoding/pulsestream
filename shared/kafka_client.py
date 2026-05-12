@@ -22,6 +22,7 @@ Usage (consumer):
             print(msg.value)
 """
 
+import base64
 import json
 import ssl
 from contextlib import asynccontextmanager
@@ -39,13 +40,18 @@ def _kafka_security_kwargs() -> dict:
     """Return SASL/SSL kwargs when cloud Kafka is configured.
 
     Local dev uses plain PLAINTEXT (no extra kwargs).
-    Cloud (Upstash) uses SASL_SSL + SCRAM-SHA-256.
+    Cloud (Aiven/Redpanda) uses SASL_SSL + SCRAM-SHA-256.
+    Aiven requires its own CA cert loaded via KAFKA_SSL_CA_CERT (base64-encoded ca.pem).
     """
     proto = settings.kafka_security_protocol.upper()
     if proto == "PLAINTEXT":
         return {}
-    # aiokafka requires an explicit ssl_context for SASL_SSL / SSL.
     ssl_ctx = ssl.create_default_context()
+    # Aiven (and some other providers) use a custom CA not in the system trust store.
+    # Set KAFKA_SSL_CA_CERT to the base64-encoded contents of the ca.pem file.
+    if settings.kafka_ssl_ca_cert:
+        ca_pem = base64.b64decode(settings.kafka_ssl_ca_cert).decode("utf-8")
+        ssl_ctx.load_verify_locations(cadata=ca_pem)
     return {
         "security_protocol": proto,
         "sasl_mechanism": settings.kafka_sasl_mechanism,

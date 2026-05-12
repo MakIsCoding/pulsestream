@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     kafka_sasl_mechanism: str = Field("SCRAM-SHA-256", alias="KAFKA_SASL_MECHANISM")
     kafka_sasl_username: str = Field("", alias="KAFKA_SASL_USERNAME")
     kafka_sasl_password: str = Field("", alias="KAFKA_SASL_PASSWORD")
+    kafka_ssl_ca_cert: str = Field("", alias="KAFKA_SSL_CA_CERT")
     kafka_topic_mentions_raw: str = Field("mentions.raw", alias="KAFKA_TOPIC_MENTIONS_RAW")
     kafka_topic_mentions_analyzed: str = Field("mentions.analyzed", alias="KAFKA_TOPIC_MENTIONS_ANALYZED")
     kafka_topic_topics_created: str = Field("topics.created", alias="KAFKA_TOPIC_TOPICS_CREATED")
@@ -72,6 +73,7 @@ class Settings(BaseSettings):
     # === Service ports ===
     web_port: int = Field(8000, alias="WEB_PORT")
     websocket_port: int = Field(8001, alias="WEBSOCKET_PORT")
+    websocket_url: str = Field("ws://localhost:8001", alias="WEBSOCKET_URL")
 
 
 @lru_cache(maxsize=1)

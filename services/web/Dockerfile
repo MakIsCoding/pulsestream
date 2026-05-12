@@ -28,8 +28,6 @@ ENV PYTHONPATH=/app
 
 # Health check — Docker uses this to know if the container is "ready"
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/healthz || exit 1
 
-# --reload makes uvicorn auto-restart on code changes (dev only).
-# When we deploy to production we'll remove --reload and add multiple workers.
-CMD ["uvicorn", "services.web.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD uvicorn services.web.main:app --host 0.0.0.0 --port ${PORT:-8000}

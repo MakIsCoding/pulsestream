@@ -180,10 +180,13 @@ class TrendPoint(BaseModel):
 
 
 class TrendResponse(BaseModel):
-    """Paginated trend data for a topic."""
+    """Trend data for a topic, including summary stats and source breakdown."""
     points: list[TrendPoint]
     bucket: str
     window: str
+    total: int
+    avg_sentiment: float | None
+    sources: dict[str, int]
 
 
 class UserStats(BaseModel):
