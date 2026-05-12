@@ -15,8 +15,11 @@ Side effect: creating a topic publishes a `topics.created` event to
 Kafka so the scheduler can start ingesting for it.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
+
+logger = logging.getLogger("pulsestream.web.topics")
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, text
@@ -234,40 +237,44 @@ async def get_topic_trend(
 
     # date_trunc field arg must be a SQL literal, not a bind parameter.
     # bucket is validated by the pattern= constraint above.
-    rows = (
-        await db.execute(
-            text(f"""
-                SELECT
-                    date_trunc('{bucket}', ingested_at)  AS ts,
-                    AVG(sentiment_score)                 AS avg_score,
-                    CAST(COUNT(*) AS INTEGER)            AS cnt
-                FROM mentions
-                WHERE topic_id = CAST(:topic_id AS uuid)
-                  AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
-                  AND analyzed_at IS NOT NULL
-                GROUP BY 1
-                ORDER BY 1
-            """),
-            {"topic_id": str(topic_id), "interval": interval},
-        )
-    ).fetchall()
+    try:
+        rows = (
+            await db.execute(
+                text(f"""
+                    SELECT
+                        date_trunc('{bucket}', ingested_at)  AS ts,
+                        AVG(sentiment_score)                 AS avg_score,
+                        CAST(COUNT(*) AS INTEGER)            AS cnt
+                    FROM mentions
+                    WHERE topic_id = CAST(:topic_id AS uuid)
+                      AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
+                      AND analyzed_at IS NOT NULL
+                    GROUP BY 1
+                    ORDER BY 1
+                """),
+                {"topic_id": str(topic_id), "interval": interval},
+            )
+        ).fetchall()
 
-    # Source breakdown and overall stats for the same window.
-    src_rows = (
-        await db.execute(
-            text("""
-                SELECT source,
-                       CAST(COUNT(*) AS INTEGER)  AS cnt,
-                       AVG(sentiment_score)       AS avg_score
-                FROM mentions
-                WHERE topic_id = CAST(:topic_id AS uuid)
-                  AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
-                  AND analyzed_at IS NOT NULL
-                GROUP BY source
-            """),
-            {"topic_id": str(topic_id), "interval": interval},
-        )
-    ).fetchall()
+        # Source breakdown and overall stats for the same window.
+        src_rows = (
+            await db.execute(
+                text("""
+                    SELECT source,
+                           CAST(COUNT(*) AS INTEGER)  AS cnt,
+                           AVG(sentiment_score)       AS avg_score
+                    FROM mentions
+                    WHERE topic_id = CAST(:topic_id AS uuid)
+                      AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
+                      AND analyzed_at IS NOT NULL
+                    GROUP BY source
+                """),
+                {"topic_id": str(topic_id), "interval": interval},
+            )
+        ).fetchall()
+    except Exception:
+        logger.exception("Trend query failed for topic %s", topic_id)
+        raise
 
     sources = {r[0]: r[1] for r in src_rows}
     total = sum(r[1] for r in src_rows)

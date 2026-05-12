@@ -41,12 +41,25 @@ async def fetch(keywords: list[str], limit: int = 20) -> list[dict[str, Any]]:
             logger.warning("Dev.to search failed: %s", exc)
             return []
 
-    data = response.json()
-    articles = data.get("result", [])
-    if not isinstance(articles, list):
+    try:
+        data = response.json()
+    except Exception:
+        logger.warning("Dev.to returned non-JSON (status=%d)", response.status_code)
         return []
 
-    return [n for article in articles if (n := _normalize(article)) is not None]
+    # Internal search endpoint returns {"result": [...]}; public API returns a list directly.
+    if isinstance(data, list):
+        articles = data
+    else:
+        articles = data.get("result", [])
+
+    if not isinstance(articles, list):
+        logger.warning("Dev.to unexpected response shape: %s", type(data).__name__)
+        return []
+
+    results = [n for article in articles if (n := _normalize(article)) is not None]
+    logger.info("Dev.to returned %d items for query %r", len(results), " ".join(keywords))
+    return results
 
 
 def _normalize(article: dict[str, Any]) -> dict[str, Any] | None:

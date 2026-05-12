@@ -39,7 +39,16 @@ async def fetch(keywords: list[str], limit: int = 20) -> list[dict[str, Any]]:
         "ceid": "US:en",
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
         try:
             response = await client.get(_GOOGLE_NEWS_RSS, params=params)
             response.raise_for_status()
@@ -54,7 +63,9 @@ async def fetch(keywords: list[str], limit: int = 20) -> list[dict[str, Any]]:
         return []
 
     items = root.findall(".//item")[:limit]
-    return [n for item in items if (n := _normalize(item)) is not None]
+    results = [n for item in items if (n := _normalize(item)) is not None]
+    logger.info("Google News returned %d items for query %r", len(results), " ".join(keywords))
+    return results
 
 
 def _normalize(item: ET.Element) -> dict[str, Any] | None:
