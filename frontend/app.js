@@ -14,6 +14,7 @@ const state = {
   newMentionIds: new Set(),
   stats: { topic_count: 0, mention_count: 0 },
   trendChart: null,
+  insightTab: 'trend',
 }
 
 // ─── Runtime Config ────────────────────────────────────────────────────────────
@@ -187,6 +188,32 @@ async function fetchTrend(topicId, bucket = 'hour', window = '24h') {
   return api(`/topics/${topicId}/trend?bucket=${bucket}&window=${window}`)
 }
 
+let _trendRefreshTimer = null
+
+async function refreshTrend(topicId) {
+  if (!topicId) return
+  try {
+    const t = await fetchTrend(topicId)
+    renderTrendChart(t)
+  } catch {
+    const s = document.getElementById('trend-section')
+    if (s) s.innerHTML = `
+      <div class="text-center py-4">
+        <p class="text-xs text-slate-600 mb-2">Trend unavailable</p>
+        <button onclick="refreshTrend('${topicId}')"
+          class="text-xs text-indigo-400 hover:text-indigo-300 underline">Retry</button>
+      </div>`
+  }
+}
+
+async function refreshSummary(topicId) {
+  if (!topicId) return
+  try {
+    const d = await fetchDigest(topicId)
+    renderDigestCard(d)
+  } catch {}
+}
+
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWs() {
   if (state.ws || !state.token) return
@@ -243,6 +270,12 @@ function handleLiveMention(mention) {
     state.mentionsTotal++
     state.newMentionIds.add(mention.mention_id)
     renderMentionsFeed()
+    // Debounce refresh the active insight tab so charts stay current
+    clearTimeout(_trendRefreshTimer)
+    _trendRefreshTimer = setTimeout(() => {
+      if (state.insightTab === 'trend') refreshTrend(state.currentTopicId)
+      else refreshSummary(state.currentTopicId)
+    }, 2000)
   }
   const topicName = (state.topics.find(t => t.id === mention.topic_id) || {}).name || 'a topic'
   showToast(`New mention — ${topicName}`, mention.title || '(no title)')
@@ -708,6 +741,7 @@ function renderTopicPage(topicId) {
     </main>
   `
 
+  state.insightTab = 'trend'
   // Fetch everything in parallel; each section updates independently.
   Promise.allSettled([
     fetchMentions(topicId, true).then(() => renderMentionsFeed()).catch(err => {
@@ -718,11 +752,8 @@ function renderTopicPage(topicId) {
           <p class="text-xs text-slate-600 mt-1">${escHtml(err.message)}</p>
         </div>`
     }),
-    fetchTrend(topicId).then(t => renderTrendChart(t)).catch(() => {
-      const s = document.getElementById('trend-section')
-      if (s) s.innerHTML = `<p class="text-xs text-slate-600 text-center py-3">Trend unavailable</p>`
-    }),
-    fetchDigest(topicId).then(d => renderDigestCard(d)).catch(() => {}),
+    refreshTrend(topicId),
+    refreshSummary(topicId),
   ]).finally(() => updateWsIndicator(state.wsConnected))
 
   connectWs()
@@ -773,12 +804,15 @@ function switchInsightTab(tab) {
   if (!trendBtn) return
   const active = 'flex-1 py-2.5 text-xs font-semibold transition-colors text-indigo-400 border-b-2 border-indigo-500'
   const inactive = 'flex-1 py-2.5 text-xs font-semibold transition-colors text-slate-500 border-b-2 border-transparent hover:text-slate-300'
+  state.insightTab = tab
   if (tab === 'trend') {
     trendBtn.className = active; summaryBtn.className = inactive
     trendSection.classList.remove('hidden'); digestSection.classList.add('hidden')
+    refreshTrend(state.currentTopicId)
   } else {
     summaryBtn.className = active; trendBtn.className = inactive
     digestSection.classList.remove('hidden'); trendSection.classList.add('hidden')
+    refreshSummary(state.currentTopicId)
   }
 }
 
@@ -845,8 +879,8 @@ function renderTrendChart(trend) {
   const section = document.getElementById('trend-section')
   if (!section) return
 
-  if (!trend || !trend.total === undefined) {
-    section.innerHTML = `<p class="text-xs text-slate-600 text-center py-4">Not enough data yet — check back after a few ingestion cycles</p>`
+  if (!trend) {
+    section.innerHTML = `<p class="text-xs text-slate-600 text-center py-4">No trend data yet</p>`
     return
   }
 
