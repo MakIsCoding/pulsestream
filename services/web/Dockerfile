@@ -11,16 +11,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first so Docker can cache the pip install layer.
-# If only code changes, Docker reuses the cached pip install — much faster builds.
 COPY shared/requirements.txt /app/shared/requirements.txt
 COPY services/web/requirements.txt /app/services/web/requirements.txt
 
 RUN pip install --no-cache-dir -r /app/shared/requirements.txt
 RUN pip install --no-cache-dir -r /app/services/web/requirements.txt
 
-# Now copy the actual code. Code changes invalidate this layer but not pip.
+# Copy all service code — the combined process imports from scheduler,
+# ingester, and analyzer modules at runtime.
 COPY shared /app/shared
 COPY services/web /app/services/web
+COPY services/scheduler /app/services/scheduler
+COPY services/ingester /app/services/ingester
+COPY services/analyzer /app/services/analyzer
 COPY frontend /app/frontend
 
 # Make `from shared...` imports work

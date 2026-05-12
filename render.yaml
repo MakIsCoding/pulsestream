@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: pulsestream
+    runtime: docker
+    dockerfilePath: services/web/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      # Render injects PORT automatically — the Dockerfile CMD already uses it.
+      # Add all your secrets in the Render dashboard (Settings → Environment).
+      # Copy values from your .env.cloud file.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: REDIS_URL
+        sync: false
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+      - key: KAFKA_SECURITY_PROTOCOL
+        value: SASL_SSL
+      - key: KAFKA_SASL_MECHANISM
+        value: SCRAM-SHA-256
+      - key: KAFKA_SASL_USERNAME
+        sync: false
+      - key: KAFKA_SASL_PASSWORD
+        sync: false
+      - key: KAFKA_SSL_CA_CERT
+        sync: false
+      - key: KAFKA_TOPIC_MENTIONS_RAW
+        value: mentions.raw
+      - key: KAFKA_TOPIC_MENTIONS_ANALYZED
+        value: mentions.analyzed
+      - key: KAFKA_TOPIC_TOPICS_CREATED
+        value: topics.created
+      - key: KAFKA_TOPIC_INGESTION_JOBS
+        value: ingestion.jobs
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRY_HOURS
+        value: "720"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: LLM_PROVIDER
+        value: groq
+      - key: INGESTION_INTERVAL_SECONDS
+        value: "300"
+      - key: MENTION_RETENTION_DAYS
+        value: "30"

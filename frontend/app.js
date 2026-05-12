@@ -14,17 +14,14 @@ const state = {
   newMentionIds: new Set(),
   stats: { topic_count: 0, mention_count: 0 },
   trendChart: null,
-  wsUrl: null,
 }
 
 // ─── Runtime Config ────────────────────────────────────────────────────────────
-async function fetchConfig() {
-  try {
-    const data = await fetch('/api/config').then(r => r.json())
-    state.wsUrl = data.ws_url
-  } catch {
-    state.wsUrl = `ws://${window.location.hostname}:8001`
-  }
+// WebSocket is served by the same host as the API (combined service).
+// Auto-detect ws:// vs wss:// based on the page protocol.
+function wsUrl() {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${scheme}//${location.host}/ws`
 }
 
 // ─── Heartbeat ─────────────────────────────────────────────────────────────────
@@ -73,7 +70,7 @@ async function login(email, password) {
   if (!data) return
   state.token = data.access_token
   localStorage.setItem('ps_token', state.token)
-  await Promise.all([loadUser(), fetchTopics(), fetchStats(), fetchConfig()])
+  await Promise.all([loadUser(), fetchTopics(), fetchStats()])
   navigate('dashboard')
   startHeartbeat()
   connectWs()
@@ -87,7 +84,7 @@ async function register(email, password) {
   if (!data) return
   state.token = data.access_token
   localStorage.setItem('ps_token', state.token)
-  await Promise.all([loadUser(), fetchTopics(), fetchStats(), fetchConfig()])
+  await Promise.all([loadUser(), fetchTopics(), fetchStats()])
   navigate('dashboard')
   startHeartbeat()
   connectWs()
@@ -193,7 +190,7 @@ async function fetchTrend(topicId, bucket = 'hour', window = '24h') {
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWs() {
   if (state.ws || !state.token) return
-  const url = `${state.wsUrl}/ws?token=${state.token}`
+  const url = `${wsUrl()}?token=${state.token}`
   const ws = new WebSocket(url)
 
   ws.onopen = () => {
@@ -1105,7 +1102,7 @@ async function init() {
     return
   }
   try {
-    await Promise.all([loadUser(), fetchTopics(), fetchStats(), fetchConfig()])
+    await Promise.all([loadUser(), fetchTopics(), fetchStats()])
     if (!state.token) return  // 401 inside api() already called logout()
     navigate('dashboard')
     startHeartbeat()

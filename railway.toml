@@ -1,9 +1,4 @@
-# Railway deployment config for PulseStream — Web API service
-#
-# This file is read by Railway when the service root is set to the repo root.
-# For the other 4 services (websocket, scheduler, ingester, analyzer),
-# set their Dockerfile path in the Railway dashboard (see README for instructions).
-
+# Railway config (kept for reference — see render.yaml for the recommended free deployment)
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "services/web/Dockerfile"
