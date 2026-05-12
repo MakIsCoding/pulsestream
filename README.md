@@ -1,6 +1,6 @@
 # PulseStream
 
-Real-time topic intelligence platform. Track any subject across HackerNews and Reddit, get AI-powered sentiment analysis and entity extraction on every mention, and watch your dashboard update live as new content arrives.
+Real-time topic intelligence platform. Track any subject across Google News, Reddit, HackerNews, and Dev.to, get AI-powered sentiment analysis and entity extraction on every mention, and watch your dashboard update live as new content arrives.
 
 **Live demo:** https://pulsestream-nj48.onrender.com
 
@@ -9,7 +9,7 @@ Real-time topic intelligence platform. Track any subject across HackerNews and R
 ## What it does
 
 1. You create a **topic** with a name and keywords (e.g. "NEET" → keywords: `NEET 2026`, `NEET 2027`)
-2. Every **2 minutes**, PulseStream fetches matching posts from HackerNews and Reddit
+2. Every **2 minutes**, PulseStream fetches matching posts from **Google News**, **Reddit**, **HackerNews**, and **Dev.to**
 3. Each post is analyzed by **Groq AI** — sentiment score, named entities, one-line summary
 4. Results appear in your dashboard **live** via WebSocket, no refresh needed
 5. A **Trend** tab shows volume and sentiment over time; a **Summary** tab shows an AI-generated digest — generated on demand the moment you open the tab
@@ -35,8 +35,10 @@ Browser
 │  │             runs digest generation every 1 h (fallback)  │ │
 │  │                                                          │ │
 │  │  Ingester   ◄── Kafka: ingestion.jobs                    │ │
-│  │             ├── HackerNews Algolia API                   │ │
+│  │             ├── Google News RSS (any topic)              │ │
 │  │             ├── Reddit JSON API                          │ │
+│  │             ├── HackerNews Algolia API (tech)            │ │
+│  │             ├── Dev.to Forem API (tech)                  │ │
 │  │             └──► Kafka: mentions.raw                     │ │
 │  │                  (deduped via Redis 7-day cache)         │ │
 │  │                                                          │ │
@@ -74,7 +76,7 @@ User creates topic
               ingestion.jobs (Kafka, one per source per active topic)
                     │
                     ▼
-              Ingester fetches HN / Reddit
+              Ingester fetches Google News / Reddit / HN / Dev.to
                     │  dedup check (Redis)
                     ▼
               mentions.raw (Kafka)
@@ -102,12 +104,26 @@ User creates topic
 | AI analysis | Groq API — Llama 3.1 8B Instant |
 | Frontend | Vanilla JS SPA, Chart.js, Tailwind CSS |
 | Deployment | Render free tier (Docker, single service) |
-| Keep-alive | UptimeRobot — pings `/healthz` every 5 min |
+
+
+---
+
+## Data sources
+
+| Source | Coverage | Auth |
+|---|---|---|
+| Google News RSS | Any topic — news, exams, sports, finance, medicine | None |
+| Reddit | Any topic — community discussions | None |
+| HackerNews | Tech / programming only | None |
+| Dev.to | Tech / programming articles | None |
+
+Adding a new source requires only a single file in `services/ingester/sources/` and one entry in `INGESTION_SOURCES`.
 
 ---
 
 ## Features
 
+- **4 data sources** — Google News (any topic), Reddit, HackerNews (tech), Dev.to (tech) — new sources plug in with ~30 lines of code
 - **Live feed** — mentions appear instantly via WebSocket as they are analyzed
 - **Sentiment analysis** — every post scored −1.0 → +1.0 with a label
 - **Entity extraction** — people, products, companies pulled from each post
@@ -150,7 +166,7 @@ All five services run independently in docker-compose (useful for local debuggin
 | `pulsestream-web` | 8000 | FastAPI HTTP + frontend |
 | `pulsestream-websocket` | 8001 | WebSocket push |
 | `pulsestream-scheduler` | — | Periodic ingestion jobs |
-| `pulsestream-ingester` | — | HN + Reddit fetcher |
+| `pulsestream-ingester` | — | Multi-source fetcher (Google News, Reddit, HN, Dev.to) |
 | `pulsestream-analyzer` | — | Groq enrichment |
 
 ---
@@ -164,8 +180,6 @@ The repo includes a `render.yaml` that deploys everything as a single free web s
 3. Set **Runtime: Docker**, **Dockerfile: `services/web/Dockerfile`**, **Context: `.`**
 4. Add environment variables from your `.env.cloud` file (see table below)
 5. Deploy — your app is live at `https://your-app.onrender.com`
-
-Set up **UptimeRobot** (free) to ping `https://your-app.onrender.com/healthz` every 5 minutes so Render never spins down the free instance.
 
 ---
 
@@ -212,8 +226,10 @@ pulsestream/
 │   ├── ingester/
 │   │   ├── main.py         # Kafka consumer + dedup logic
 │   │   └── sources/
-│   │       ├── hackernews.py
-│   │       └── reddit.py
+│   │       ├── google_news.py  # Google News RSS (any topic)
+│   │       ├── reddit.py
+│   │       ├── hackernews.py   # tech-focused
+│   │       └── devto.py        # tech-focused
 │   └── analyzer/
 │       └── main.py         # Groq batch analysis + Postgres write
 ├── shared/
