@@ -338,6 +338,7 @@ function showToast(title, body) {
 
 // ─── Router ────────────────────────────────────────────────────────────────────
 function navigate(route, params = {}) {
+  if (_mockFeedTimer) { clearInterval(_mockFeedTimer); _mockFeedTimer = null }
   if (route === 'login') {
     renderLoginPage()
   } else if (route === 'dashboard') {
@@ -382,11 +383,457 @@ function sentimentChip(label, score) {
 
 function sourceChip(src) {
   const map = {
-    hackernews: 'bg-orange-500/15 text-orange-400 border-orange-500/25',
-    reddit:     'bg-red-500/15 text-red-400 border-red-500/25',
+    hackernews:  'bg-orange-500/15 text-orange-400 border-orange-500/25',
+    reddit:      'bg-red-500/15 text-red-400 border-red-500/25',
+    google_news: 'bg-sky-500/15 text-sky-400 border-sky-500/25',
+    devto:       'bg-violet-500/15 text-violet-400 border-violet-500/25',
   }
+  const labels = { google_news: 'google news', devto: 'dev.to' }
   const cls = map[src] || 'bg-slate-700 text-slate-400 border-slate-600'
-  return `<span class="inline-flex items-center px-2 py-0.5 rounded border text-xs ${cls}">${escHtml(src)}</span>`
+  return `<span class="inline-flex items-center px-2 py-0.5 rounded border text-xs ${cls}">${escHtml(labels[src] || src)}</span>`
+}
+
+// ─── Landing Page ──────────────────────────────────────────────────────────────
+
+let _mockFeedTimer = null
+
+const _MOCK_MENTIONS = [
+  { source: 'reddit',      title: 'ChatGPT integration now shipping at massive scale',          sentiment: 'positive', score: '+0.82' },
+  { source: 'hackernews',  title: 'Ask HN: How are you running LLM agents in production?',      sentiment: 'neutral',  score: '+0.04' },
+  { source: 'google_news', title: 'AI agents are fundamentally reshaping enterprise software',  sentiment: 'positive', score: '+0.71' },
+  { source: 'devto',       title: 'Building resilient multi-agent pipelines with retry logic',  sentiment: 'neutral',  score: '+0.18' },
+  { source: 'reddit',      title: "o3 performance blows GPT-4 out of the water on benchmarks", sentiment: 'positive', score: '+0.88' },
+  { source: 'hackernews',  title: 'Why most AI agent frameworks will fail in production',        sentiment: 'negative', score: '−0.54' },
+  { source: 'google_news', title: 'Groq announces record 800 tok/s open-model inference',       sentiment: 'positive', score: '+0.76' },
+  { source: 'devto',       title: 'Kafka for the rest of us: stream processing basics',         sentiment: 'neutral',  score: '+0.12' },
+]
+
+function _lsrc(src) {
+  const map = {
+    reddit:      'bg-red-500/15 text-red-400 border-red-500/25',
+    hackernews:  'bg-orange-500/15 text-orange-400 border-orange-500/25',
+    google_news: 'bg-sky-500/15 text-sky-400 border-sky-500/25',
+    devto:       'bg-violet-500/15 text-violet-400 border-violet-500/25',
+  }
+  const labels = { reddit: 'reddit', hackernews: 'hn', google_news: 'google news', devto: 'dev.to' }
+  const cls = map[src] || 'bg-slate-700 text-slate-400 border-slate-600'
+  return `<span class="inline-flex items-center px-1.5 py-0.5 rounded border text-xs font-medium ${cls}">${labels[src] || src}</span>`
+}
+
+function _lsent(sentiment, score) {
+  const map = {
+    positive: 'bg-green-500/15 text-green-400',
+    negative: 'bg-red-500/15 text-red-400',
+    neutral:  'bg-slate-700/80 text-slate-400',
+  }
+  return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${map[sentiment] || map.neutral}">${sentiment} ${score}</span>`
+}
+
+function _lcard(m, animated = false, age = 'just now') {
+  return `<div class="px-3 py-2.5 border-b border-slate-800/80 ${animated ? 'slide-down' : ''}">
+    <div class="flex items-start justify-between gap-2 mb-1.5">
+      <p class="text-xs text-slate-300 leading-snug flex-1 min-w-0">${escHtml(m.title)}</p>
+      <span class="text-xs text-slate-600 whitespace-nowrap shrink-0 ml-2">${age}</span>
+    </div>
+    <div class="flex items-center gap-1.5">${_lsrc(m.source)}${_lsent(m.sentiment, m.score)}</div>
+  </div>`
+}
+
+function _startMockFeed() {
+  if (_mockFeedTimer) clearInterval(_mockFeedTimer)
+  let idx = 3
+  _mockFeedTimer = setInterval(() => {
+    const feed = document.getElementById('mock-feed')
+    if (!feed) { clearInterval(_mockFeedTimer); _mockFeedTimer = null; return }
+    const m = _MOCK_MENTIONS[idx % _MOCK_MENTIONS.length]
+    idx++
+    const wrap = document.createElement('div')
+    wrap.innerHTML = _lcard(m, true, 'just now')
+    feed.insertBefore(wrap.firstElementChild, feed.firstChild)
+    while (feed.children.length > 5) feed.removeChild(feed.lastChild)
+  }, 2800)
+}
+
+const _GH = 'https://github.com/MakIsCoding/pulsestream'
+const _DEMO = 'https://pulsestream-nj48.onrender.com'
+
+const _ghIcon = `<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>`
+
+const _psLogo = `<div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+  <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+  </svg>
+</div>`
+
+function _lpNav() {
+  return `
+<nav class="fixed top-0 inset-x-0 z-50 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/60">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      ${_psLogo}
+      <span class="font-bold text-white tracking-tight">PulseStream</span>
+    </div>
+    <div class="flex items-center gap-1 sm:gap-2">
+      <a href="${_GH}" target="_blank" rel="noopener"
+         class="hidden sm:flex items-center gap-1.5 text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors">
+        ${_ghIcon} GitHub
+      </a>
+      <button onclick="renderLoginPage('login')"
+        class="text-sm text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium">
+        Sign In
+      </button>
+      <button onclick="renderLoginPage('register')"
+        class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+        Get Started
+      </button>
+    </div>
+  </div>
+</nav>`
+}
+
+function _lpHero() {
+  const initial = [
+    _lcard(_MOCK_MENTIONS[0], false, 'just now'),
+    _lcard(_MOCK_MENTIONS[1], false, '1m ago'),
+    _lcard(_MOCK_MENTIONS[2], false, '3m ago'),
+  ].join('')
+
+  return `
+<section class="relative min-h-screen flex flex-col items-center justify-center pt-16 overflow-hidden bg-slate-950">
+  <div class="hero-glow"></div>
+  <div class="hero-grid"></div>
+  <div class="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 text-center">
+    <div class="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/20 rounded-full px-4 py-1.5 text-sm text-indigo-300 mb-8">
+      <span class="w-2 h-2 rounded-full bg-indigo-400 pulse-dot"></span>
+      Open source · Deployed on Render · Kafka + Redis + PostgreSQL
+    </div>
+    <h1 class="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight text-white leading-[1.08] mb-6">
+      Track what the web says.<br/>
+      <span class="gradient-text">In real time.</span>
+    </h1>
+    <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+      Monitor any topic across 4 sources. Get LLM-powered sentiment analysis on every mention.
+      Watch your dashboard update live over WebSocket — all on $0 infrastructure.
+    </p>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-16">
+      <button onclick="renderLoginPage('register')"
+        class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+        Start monitoring free →
+      </button>
+      <a href="${_GH}" target="_blank" rel="noopener"
+        class="w-full sm:w-auto flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 text-slate-300 hover:text-white font-medium px-8 py-3 rounded-xl text-sm transition-colors">
+        ${_ghIcon} View source code
+      </a>
+    </div>
+  </div>
+
+  <!-- Mock browser window -->
+  <div class="relative z-10 w-full max-w-2xl mx-auto px-4 sm:px-6 pb-16">
+    <div class="rounded-2xl border border-slate-700/80 bg-slate-900 shadow-2xl shadow-black/60 overflow-hidden">
+      <!-- Browser chrome -->
+      <div class="bg-slate-800/90 border-b border-slate-700/80 px-4 py-3 flex items-center gap-3">
+        <div class="flex items-center gap-1.5 shrink-0">
+          <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+          <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+        </div>
+        <div class="flex-1 bg-slate-900/70 border border-slate-700/60 rounded-md px-3 py-1 text-xs text-slate-500 text-center truncate">
+          pulsestream-nj48.onrender.com
+        </div>
+      </div>
+      <!-- App header mock -->
+      <div class="bg-slate-900/80 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <div class="w-5 h-5 rounded-md bg-indigo-600 flex items-center justify-center">
+            <svg class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
+          <span class="text-xs font-semibold text-white">PulseStream</span>
+          <span class="text-slate-600 mx-0.5">/</span>
+          <span class="text-xs font-medium text-slate-300">AI Agents</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-400 pulse-dot"></span>
+          <span class="text-xs text-green-400 font-medium">live</span>
+        </div>
+      </div>
+      <!-- Source filter strip -->
+      <div class="px-3 py-2 border-b border-slate-800 flex items-center gap-1.5 bg-slate-900/50">
+        <span class="text-xs text-slate-600">sources:</span>
+        ${['reddit','hackernews','google_news','devto'].map(s => _lsrc(s)).join('')}
+      </div>
+      <!-- Live mention feed -->
+      <div id="mock-feed" class="divide-y divide-slate-800/60 max-h-64 overflow-hidden bg-slate-900/30">
+        ${initial}
+      </div>
+      <!-- Footer strip -->
+      <div class="px-3 py-2 bg-slate-900/50 border-t border-slate-800 flex items-center justify-between">
+        <span class="text-xs text-slate-600">Groq llama-3.1-8b · sentiment analysis</span>
+        <span class="text-xs text-indigo-400 font-medium">● ingesting</span>
+      </div>
+    </div>
+    <!-- Glow underneath window -->
+    <div class="absolute -bottom-4 left-1/2 -translate-x-1/2 w-3/4 h-8 bg-indigo-600/15 blur-2xl rounded-full pointer-events-none"></div>
+  </div>
+</section>`
+}
+
+function _lpPipeline() {
+  const stages = [
+    {
+      cls: 'stage-1',
+      accent: 'bg-sky-500/10 border-sky-500/30 text-sky-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>`,
+      name: 'Ingest',
+      desc: '4 sources · 2 min cycle',
+    },
+    {
+      cls: 'stage-2',
+      accent: 'bg-orange-500/10 border-orange-500/30 text-orange-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>`,
+      name: 'Stream',
+      desc: 'Kafka · 3 topics',
+    },
+    {
+      cls: 'stage-3',
+      accent: 'bg-violet-500/10 border-violet-500/30 text-violet-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707.707M12 5a7 7 0 100 14 7 7 0 000-14z"/>`,
+      name: 'Analyse',
+      desc: 'Groq LLM · sentiment',
+    },
+    {
+      cls: 'stage-4',
+      accent: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>`,
+      name: 'Persist',
+      desc: 'Postgres · Redis dedup',
+    },
+    {
+      cls: 'stage-5',
+      accent: 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.143 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>`,
+      name: 'Deliver',
+      desc: 'WebSocket · live push',
+    },
+  ]
+
+  const connIcon = `<svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+  </svg>`
+
+  const stageHtml = stages.map((s, i) => {
+    const conn = i < stages.length - 1
+      ? `<div class="hidden sm:flex items-center px-1 conn-${i + 1}">${connIcon}</div>
+         <div class="flex sm:hidden justify-center py-1 conn-${i + 1}">${connIcon}</div>`
+      : ''
+    return `
+      <div class="flex flex-col sm:flex-row items-center">
+        <div class="${s.cls} w-full sm:w-32 border rounded-xl p-4 text-center bg-slate-900 transition-colors">
+          <div class="w-9 h-9 rounded-lg border ${s.accent} flex items-center justify-center mx-auto mb-2.5">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">${s.icon}</svg>
+          </div>
+          <p class="text-sm font-semibold text-white">${s.name}</p>
+          <p class="text-xs text-slate-500 mt-0.5 leading-tight">${s.desc}</p>
+        </div>
+      </div>
+      ${conn}`
+  }).join('')
+
+  return `
+<section class="py-24 bg-slate-900 border-y border-slate-800">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14">
+      <p class="text-xs font-semibold text-indigo-400 uppercase tracking-widest mb-3">Architecture</p>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">From raw content to live insight</h2>
+      <p class="text-slate-400 max-w-lg mx-auto">Five decoupled stages. Each independently scalable.</p>
+    </div>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-0 overflow-x-auto pb-2">
+      ${stageHtml}
+    </div>
+    <p class="text-center text-xs text-slate-600 mt-10">
+      At-least-once Kafka delivery · Redis deduplication · asyncpg + ON CONFLICT DO NOTHING
+    </p>
+  </div>
+</section>`
+}
+
+function _lpFeatures() {
+  const cards = [
+    {
+      accent: 'bg-sky-500/10 border-sky-500/25 text-sky-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>`,
+      title: 'Multi-source ingestion',
+      desc: 'Scrapes HackerNews, Reddit, Google News, and Dev.to every 2 minutes per topic. Configurable keywords. Browser UA to avoid blocks.',
+    },
+    {
+      accent: 'bg-orange-500/10 border-orange-500/25 text-orange-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>`,
+      title: 'Kafka event streaming',
+      desc: 'Three Kafka topics decouple ingestion from analysis. Services communicate only via events — no shared state, no direct calls.',
+    },
+    {
+      accent: 'bg-violet-500/10 border-violet-500/25 text-violet-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707.707M12 5a7 7 0 100 14 7 7 0 000-14z"/>`,
+      title: 'LLM sentiment analysis',
+      desc: 'Groq Cloud (llama-3.1-8b-instant) extracts a sentiment score, label, named entities, and a one-line summary per mention. ~100ms latency.',
+    },
+    {
+      accent: 'bg-red-500/10 border-red-500/25 text-red-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>`,
+      title: 'Redis deduplication',
+      desc: 'Content fingerprints checked in Redis before every insert. ON CONFLICT DO NOTHING on Postgres as a second guard. Zero duplicate rows.',
+    },
+    {
+      accent: 'bg-green-500/10 border-green-500/25 text-green-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.143 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>`,
+      title: 'Live WebSocket push',
+      desc: "Analyzed mentions are pushed to the browser the moment they're processed. Per-user channels, automatic reconnect, no polling.",
+    },
+    {
+      accent: 'bg-amber-500/10 border-amber-500/25 text-amber-400',
+      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>`,
+      title: 'Smart scheduling',
+      desc: 'Heartbeat-based activity detection. Scheduler only ingests for users active in the last 15 minutes — idle accounts consume zero resources.',
+    },
+  ]
+
+  const cardsHtml = cards.map(c => `
+    <div class="group bg-slate-800/40 border border-slate-700/60 rounded-2xl p-5 hover:border-slate-600 hover:bg-slate-800/70 transition-all">
+      <div class="w-9 h-9 rounded-xl border ${c.accent} flex items-center justify-center mb-4">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">${c.icon}</svg>
+      </div>
+      <h3 class="font-semibold text-white text-sm mb-2">${c.title}</h3>
+      <p class="text-sm text-slate-400 leading-relaxed">${c.desc}</p>
+    </div>`).join('')
+
+  return `
+<section class="py-24 bg-slate-950">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14">
+      <p class="text-xs font-semibold text-indigo-400 uppercase tracking-widest mb-3">Engineering</p>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Built with production patterns</h2>
+      <p class="text-slate-400 max-w-lg mx-auto">Not a tutorial project. Real architecture decisions with real trade-offs.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      ${cardsHtml}
+    </div>
+  </div>
+</section>`
+}
+
+function _lpStack() {
+  const groups = [
+    {
+      label: 'Backend',
+      color: 'text-sky-400',
+      items: ['FastAPI (Python)', 'asyncpg + SQLAlchemy', 'Pydantic v2', 'bcrypt + JWT'],
+    },
+    {
+      label: 'Messaging & Cache',
+      color: 'text-orange-400',
+      items: ['Apache Kafka (Upstash)', 'Redis (Upstash)', 'Consumer groups', 'At-least-once delivery'],
+    },
+    {
+      label: 'AI / Data',
+      color: 'text-violet-400',
+      items: ['Groq Cloud inference', 'llama-3.1-8b-instant', 'PostgreSQL (Neon)', 'Resend (email)'],
+    },
+    {
+      label: 'Frontend',
+      color: 'text-green-400',
+      items: ['Vanilla JS SPA', 'Tailwind CSS', 'Chart.js', 'Native WebSocket'],
+    },
+  ]
+
+  const groupsHtml = groups.map(g => `
+    <div>
+      <p class="text-xs font-semibold ${g.color} uppercase tracking-wider mb-3">${g.label}</p>
+      <ul class="space-y-2">
+        ${g.items.map(item => `
+          <li class="flex items-center gap-2 text-sm text-slate-300">
+            <span class="w-1 h-1 rounded-full bg-slate-600 shrink-0"></span>
+            ${item}
+          </li>`).join('')}
+      </ul>
+    </div>`).join('')
+
+  return `
+<section class="py-24 bg-slate-900 border-y border-slate-800">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14">
+      <p class="text-xs font-semibold text-indigo-400 uppercase tracking-widest mb-3">Stack</p>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Technology choices</h2>
+      <p class="text-slate-400 max-w-lg mx-auto">
+        Every component chosen for a reason. The entire system runs on
+        <span class="text-white font-medium">one Render free-tier instance</span> — all 5 services as asyncio background tasks.
+      </p>
+    </div>
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-8 max-w-4xl mx-auto">
+      ${groupsHtml}
+    </div>
+  </div>
+</section>`
+}
+
+function _lpCta() {
+  return `
+<section class="py-24 bg-slate-950">
+  <div class="max-w-2xl mx-auto px-4 sm:px-6 text-center">
+    <div class="bg-gradient-to-b from-indigo-500/10 to-slate-800/30 border border-indigo-500/20 rounded-3xl p-10 sm:p-14">
+      <div class="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto mb-6">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+      </div>
+      <h2 class="text-3xl font-bold text-white mb-4">See it running live</h2>
+      <p class="text-slate-400 mb-8 text-lg leading-relaxed">
+        Free account. No credit card. 4 live sources ingesting right now.
+      </p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3">
+        <button onclick="renderLoginPage('register')"
+          class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+          Create free account →
+        </button>
+        <a href="${_GH}" target="_blank" rel="noopener"
+          class="w-full sm:w-auto flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 text-slate-300 hover:text-white font-medium px-8 py-3 rounded-xl text-sm transition-colors">
+          ${_ghIcon} Browse the code
+        </a>
+      </div>
+    </div>
+  </div>
+</section>`
+}
+
+function _lpFooter() {
+  return `
+<footer class="bg-slate-950 border-t border-slate-800 py-8">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2.5">
+      ${_psLogo}
+      <span class="font-bold text-white tracking-tight text-sm">PulseStream</span>
+      <span class="text-slate-700 mx-1">·</span>
+      <span class="text-xs text-slate-600">Real-time topic intelligence</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="${_GH}" target="_blank" rel="noopener"
+         class="flex items-center gap-1.5 text-sm text-slate-500 hover:text-white transition-colors">
+        ${_ghIcon} GitHub
+      </a>
+      <a href="${_DEMO}" target="_blank" rel="noopener"
+         class="text-sm text-slate-500 hover:text-white transition-colors">
+        Live demo →
+      </a>
+    </div>
+  </div>
+</footer>`
+}
+
+function renderLandingPage() {
+  if (_mockFeedTimer) { clearInterval(_mockFeedTimer); _mockFeedTimer = null }
+  document.getElementById('app').innerHTML =
+    _lpNav() + _lpHero() + _lpPipeline() + _lpFeatures() + _lpStack() + _lpCta() + _lpFooter()
+  _startMockFeed()
 }
 
 // ─── Page: Login / Register ────────────────────────────────────────────────────
@@ -1419,7 +1866,7 @@ async function init() {
   }
 
   if (!state.token) {
-    navigate('login')
+    renderLandingPage()
     return
   }
   try {

@@ -24,6 +24,44 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #0f172a; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+    /* Landing page */
+    html { scroll-behavior: smooth; }
+    .gradient-text {
+      background: linear-gradient(135deg, #818cf8 0%, #a78bfa 50%, #c084fc 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .hero-glow {
+      position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(ellipse 80% 55% at 50% 0%, rgba(99,102,241,0.18) 0%, transparent 70%);
+    }
+    .hero-grid {
+      position: absolute; inset: 0; pointer-events: none;
+      background-image: radial-gradient(circle, rgba(99,102,241,0.08) 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .slide-down { animation: slideDown 0.35s ease-out both; }
+    @keyframes stageGlow {
+      0%, 80%, 100% { border-color: rgb(51,65,85); }
+      40%  { border-color: rgba(99,102,241,0.65); box-shadow: 0 0 20px rgba(99,102,241,0.2); }
+    }
+    .stage-1 { animation: stageGlow 5s ease-in-out infinite; }
+    .stage-2 { animation: stageGlow 5s ease-in-out infinite; animation-delay: 1s; }
+    .stage-3 { animation: stageGlow 5s ease-in-out infinite; animation-delay: 2s; }
+    .stage-4 { animation: stageGlow 5s ease-in-out infinite; animation-delay: 3s; }
+    .stage-5 { animation: stageGlow 5s ease-in-out infinite; animation-delay: 4s; }
+    @keyframes connFlow {
+      0%, 70%, 100% { opacity: 0.2; }
+      35% { opacity: 1; }
+    }
+    .conn-1 { animation: connFlow 5s ease-in-out infinite; animation-delay: 0.5s; }
+    .conn-2 { animation: connFlow 5s ease-in-out infinite; animation-delay: 1.5s; }
+    .conn-3 { animation: connFlow 5s ease-in-out infinite; animation-delay: 2.5s; }
+    .conn-4 { animation: connFlow 5s ease-in-out infinite; animation-delay: 3.5s; }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen antialiased">
