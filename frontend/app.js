@@ -499,7 +499,7 @@ function _lpHero() {
   ].join('')
 
   return `
-<section class="relative min-h-screen flex flex-col items-center justify-center pt-16 overflow-hidden bg-slate-950">
+<section class="relative min-h-screen flex flex-col items-center justify-center pt-28 pb-12 overflow-hidden bg-slate-950">
   <div class="hero-glow"></div>
   <div class="hero-grid"></div>
   <div class="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 text-center">
@@ -629,7 +629,7 @@ function _lpPipeline() {
       : ''
     return `
       <div class="flex flex-col sm:flex-row items-center">
-        <div class="${s.cls} w-full sm:w-32 border rounded-xl p-4 text-center bg-slate-900 transition-colors">
+        <div class="${s.cls} w-full sm:w-36 sm:h-36 flex flex-col items-center justify-center border rounded-xl p-4 text-center bg-slate-900 transition-colors">
           <div class="w-9 h-9 rounded-lg border ${s.accent} flex items-center justify-center mx-auto mb-2.5">
             <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">${s.icon}</svg>
           </div>
