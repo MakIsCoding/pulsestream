@@ -476,33 +476,33 @@ const _psLogo = `<div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center 
 
 function _lpNav() {
   const authArea = state.token
-    ? `${state.user ? `<span class="hidden sm:block text-xs text-slate-500">${escHtml(state.user.email)}</span>` : ''}
+    ? `${state.user ? `<span class="hidden md:block text-sm text-slate-500">${escHtml(state.user.email)}</span>` : ''}
        <button onclick="navigate('dashboard')"
-         class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
-         Dashboard →
+         class="text-sm font-medium text-slate-200 hover:text-white border border-slate-700 hover:border-slate-500 px-3.5 py-1.5 rounded-lg transition-colors">
+         Dashboard
        </button>
        <button onclick="logout()"
-         class="text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium">
+         class="text-sm text-slate-400 hover:text-white transition-colors">
          Sign out
        </button>`
     : `<button onclick="renderLoginPage('login')"
-         class="text-sm text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium">
+         class="text-sm text-slate-300 hover:text-white transition-colors font-medium">
          Sign In
        </button>
        <button onclick="renderLoginPage('register')"
-         class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+         class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors">
          Get Started
        </button>`
   return `
-<nav class="fixed top-0 inset-x-0 z-50 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/60">
+<nav class="fixed top-0 inset-x-0 z-50 bg-slate-950/90 backdrop-blur-md border-b border-slate-800">
   <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
     <div class="flex items-center gap-2.5">
       ${_psLogo}
-      <span class="font-bold text-white tracking-tight">PulseStream</span>
+      <span class="font-bold text-sm text-white tracking-tight">PulseStream</span>
     </div>
-    <div class="flex items-center gap-1 sm:gap-2">
+    <div class="flex items-center gap-3 sm:gap-4">
       <a href="${_GH}" target="_blank" rel="noopener"
-         class="hidden sm:flex items-center gap-1.5 text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors">
+         class="hidden sm:flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors">
         ${_ghIcon} GitHub
       </a>
       ${authArea}
@@ -1680,25 +1680,21 @@ function backToDashboard() {
 // ─── Shared Header ─────────────────────────────────────────────────────────────
 function renderHeader() {
   return `
-    <header class="sticky top-0 z-40 bg-slate-900/80 backdrop-blur-sm border-b border-slate-800">
-      <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
+    <header class="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-md border-b border-slate-800">
+      <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
         <button onclick="renderLandingPage()"
           class="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
-          <div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
-            <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-            </svg>
-          </div>
+          ${_psLogo}
           <span class="font-bold text-sm text-white tracking-tight">PulseStream</span>
         </button>
-        <div class="flex items-center gap-4">
-          ${state.user ? `<span class="text-xs text-slate-500 hidden sm:block">${escHtml(state.user.email)}</span>` : ''}
+        <div class="flex items-center gap-3 sm:gap-4">
+          ${state.user ? `<span class="text-sm text-slate-500 hidden md:block">${escHtml(state.user.email)}</span>` : ''}
           <button onclick="showPasswordModal()"
-            class="text-xs text-slate-400 hover:text-white transition-colors">
+            class="text-sm text-slate-400 hover:text-white transition-colors hidden sm:block">
             Change password
           </button>
           <button onclick="logout()"
-            class="text-xs text-slate-400 hover:text-white transition-colors">
+            class="text-sm text-slate-400 hover:text-white transition-colors">
             Sign out
           </button>
         </div>
