@@ -112,16 +112,26 @@ async def _handle_job(job: dict[str, Any]) -> None:
         logger.warning("Unknown source %r; skipping job", source)
         return
 
-    if not keywords:
-        logger.info("Job for topic %s has no keywords; skipping", name)
+    # Build search terms: topic name first, then unique keywords.
+    # Including the name ensures results even when keywords list is empty,
+    # and improves relevance across sources that need a good query string.
+    seen: set[str] = set()
+    search_terms: list[str] = []
+    for term in ([name] if name else []) + list(keywords):
+        if term and term.lower() not in seen:
+            seen.add(term.lower())
+            search_terms.append(term)
+
+    if not search_terms:
+        logger.info("Job for source %s has no search terms; skipping", source)
         return
 
     logger.info(
-        "Fetching from %s for topic=%r keywords=%s",
-        source, name, keywords,
+        "Fetching from %s for topic=%r search_terms=%s",
+        source, name, search_terms,
     )
 
-    items = await fetch_func(keywords, PER_JOB_LIMIT)
+    items = await fetch_func(search_terms, PER_JOB_LIMIT)
     if not items:
         logger.info("  No results from %s for %r", source, name)
         return

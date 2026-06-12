@@ -84,6 +84,7 @@ async def create_topic(
         user_id=current_user.id,
         name=topic.name,
         keywords=topic.keywords,
+        sources=topic.sources,
     )
     await publish_event(
         settings.kafka_topic_topics_created,

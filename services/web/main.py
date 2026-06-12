@@ -25,6 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from sqlalchemy import text
+
 from shared.config import settings
 from shared.db import engine, Base
 from shared.kafka_client import close_producer, get_producer
@@ -107,6 +109,11 @@ async def lifespan(app: FastAPI):
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent migration: add sources column to existing deployments
+        await conn.execute(text(
+            "ALTER TABLE topics ADD COLUMN IF NOT EXISTS "
+            "sources JSONB NOT NULL DEFAULT '[\"hackernews\",\"reddit\",\"google_news\",\"devto\"]'"
+        ))
 
     await get_redis()
     await get_producer()

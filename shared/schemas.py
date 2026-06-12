@@ -79,10 +79,14 @@ class TokenPayload(BaseModel):
 # TOPIC
 # ============================================
 
+_ALL_SOURCES = ["hackernews", "reddit", "google_news", "devto"]
+
+
 class TopicCreate(BaseModel):
     """Body for POST /topics."""
     name: str = Field(min_length=1, max_length=120)
     keywords: list[str] = Field(default_factory=list, max_length=20)
+    sources: list[str] = Field(default_factory=lambda: list(_ALL_SOURCES))
 
 
 class TopicUpdate(BaseModel):
@@ -90,6 +94,7 @@ class TopicUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     keywords: list[str] | None = Field(default=None, max_length=20)
     is_active: bool | None = None
+    sources: list[str] | None = None
 
 
 class TopicRead(BaseModel):
@@ -100,6 +105,7 @@ class TopicRead(BaseModel):
     user_id: UUID
     name: str
     keywords: list[str]
+    sources: list[str]
     is_active: bool
     created_at: datetime
 
@@ -147,6 +153,7 @@ class TopicCreatedEvent(BaseModel):
     user_id: UUID
     name: str
     keywords: list[str]
+    sources: list[str] = Field(default_factory=lambda: list(_ALL_SOURCES))
 
 
 class MentionRawEvent(BaseModel):

@@ -73,6 +73,10 @@ class Topic(Base):
     keywords: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    sources: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False,
+        default=lambda: ["hackernews", "reddit", "google_news", "devto"],
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

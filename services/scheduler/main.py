@@ -204,8 +204,9 @@ class Scheduler:
                 await self._enqueue_for_topic(event)
 
     async def _enqueue_for_topic(self, topic_event: dict[str, Any]) -> None:
-        """Fan out ingestion jobs for a single topic across all sources."""
-        for source in INGESTION_SOURCES:
+        """Fan out ingestion jobs for a single topic across its selected sources."""
+        sources = topic_event.get("sources") or INGESTION_SOURCES
+        for source in sources:
             job = IngestionJobEvent(
                 topic_id=topic_event["topic_id"],
                 user_id=topic_event["user_id"],
@@ -372,7 +373,7 @@ class Scheduler:
                     keywords=topic.keywords,
                     source="",
                 )
-                for source in INGESTION_SOURCES:
+                for source in (topic.sources or INGESTION_SOURCES):
                     event_dict = event.model_dump(mode="json")
                     event_dict["source"] = source
                     await publish_event(

@@ -114,10 +114,10 @@ async function fetchTopics() {
   state.topics = data || []
 }
 
-async function createTopic(name, keywords) {
+async function createTopic(name, keywords, sources = ['hackernews','reddit','google_news','devto']) {
   const topic = await api('/topics', {
     method: 'POST',
-    body: JSON.stringify({ name, keywords }),
+    body: JSON.stringify({ name, keywords, sources }),
   })
   if (topic) {
     state.topics.unshift(topic)
@@ -310,7 +310,7 @@ function handleLiveMention(mention) {
     }, 2000)
   }
   const topicName = (state.topics.find(t => t.id === mention.topic_id) || {}).name || 'a topic'
-  showToast(`New mention — ${topicName}`, mention.title || '(no title)')
+  showToast(`New mention — ${topicName}`, mention.title || '(no title)', mention.topic_id)
 }
 
 function updateWsIndicator(connected) {
@@ -322,15 +322,24 @@ function updateWsIndicator(connected) {
 }
 
 // ─── Toasts ────────────────────────────────────────────────────────────────────
-function showToast(title, body) {
+function showToast(title, body, topicId = null) {
   const container = document.getElementById('toasts')
   if (!container) return
   const el = document.createElement('div')
-  el.className = 'fade-in pointer-events-auto bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 shadow-2xl max-w-xs'
+  const clickable = !!topicId
+  el.className = `fade-in pointer-events-auto bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 shadow-2xl max-w-xs${clickable ? ' cursor-pointer hover:border-indigo-500/50 hover:bg-slate-750 transition-colors' : ''}`
   el.innerHTML = `
-    <p class="text-xs font-semibold text-indigo-400">${escHtml(title)}</p>
-    <p class="text-xs text-slate-400 mt-0.5 truncate">${escHtml(body)}</p>
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <p class="text-xs font-semibold text-indigo-400">${escHtml(title)}</p>
+        <p class="text-xs text-slate-400 mt-0.5 truncate">${escHtml(body)}</p>
+      </div>
+      ${clickable ? '<span class="text-slate-600 text-xs shrink-0 mt-0.5">→</span>' : ''}
+    </div>
   `
+  if (clickable) {
+    el.addEventListener('click', () => { el.remove(); navigate('topic', { id: topicId }) })
+  }
   container.appendChild(el)
   setTimeout(() => el.classList.add('opacity-0', 'transition-opacity', 'duration-500'), 3500)
   setTimeout(() => el.remove(), 4000)
@@ -618,18 +627,21 @@ function _lpPipeline() {
     },
   ]
 
-  const connIcon = `<svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  const connIconH = `<svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+  </svg>`
+  const connIconV = `<svg class="w-4 h-4 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
   </svg>`
 
   const stageHtml = stages.map((s, i) => {
     const conn = i < stages.length - 1
-      ? `<div class="hidden sm:flex items-center px-1 conn-${i + 1}">${connIcon}</div>
-         <div class="flex sm:hidden justify-center py-1 conn-${i + 1}">${connIcon}</div>`
+      ? `<div class="hidden sm:flex items-center px-1 conn-${i + 1}">${connIconH}</div>
+         <div class="flex sm:hidden justify-center py-1 conn-${i + 1}">${connIconV}</div>`
       : ''
     return `
       <div class="flex flex-col sm:flex-row items-center">
-        <div class="${s.cls} w-full sm:w-36 sm:h-36 flex flex-col items-center justify-center border rounded-xl p-4 text-center bg-slate-900 transition-colors">
+        <div class="${s.cls} w-full sm:w-36 min-h-[120px] sm:h-36 flex flex-col items-center justify-center border rounded-xl p-4 text-center bg-slate-900 transition-colors">
           <div class="w-9 h-9 rounded-lg border ${s.accent} flex items-center justify-center mx-auto mb-2.5">
             <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">${s.icon}</svg>
           </div>
@@ -964,6 +976,22 @@ function renderDashboardPage() {
                 class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition" />
             </div>
           </div>
+          <div class="mt-3">
+            <label class="block text-xs text-slate-400 mb-2">Sources to monitor</label>
+            <div class="flex flex-wrap gap-x-4 gap-y-2">
+              ${[
+                ['hackernews', 'Hacker News'],
+                ['reddit',     'Reddit'],
+                ['google_news','Google News'],
+                ['devto',      'Dev.to'],
+              ].map(([val, label]) => `
+                <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox" class="tp-source" value="${val}" checked
+                    style="accent-color:#6366f1;width:13px;height:13px;" />
+                  <span class="text-xs text-slate-300">${label}</span>
+                </label>`).join('')}
+            </div>
+          </div>
           <div id="create-err" class="hidden mt-2.5 text-xs text-red-400"></div>
           <div class="flex gap-2 mt-4">
             <button type="submit"
@@ -1046,6 +1074,9 @@ function renderTopicCard(topic) {
         <span class="shrink-0 mt-0.5 w-2 h-2 rounded-full ${dotColor}"></span>
       </div>
       <div class="flex flex-wrap gap-1.5 min-h-5">${chips}${overflow}</div>
+      <div class="flex flex-wrap gap-1 mt-1">
+        ${(topic.sources || ['hackernews','reddit','google_news','devto']).map(s => sourceChip(s)).join('')}
+      </div>
       <div class="flex items-center gap-2 mt-auto">
         <button onclick="openTopic('${topic.id}')"
           class="flex-1 bg-indigo-600/20 hover:bg-indigo-600/35 border border-indigo-600/30 text-indigo-400 text-xs font-medium py-2 rounded-lg transition-colors">
@@ -1081,10 +1112,17 @@ async function handleCreateTopic(evt) {
   const name = document.getElementById('tp-name').value.trim()
   const raw  = document.getElementById('tp-keywords').value
   const keywords = raw.split(',').map(k => k.trim()).filter(Boolean)
+  const sources = Array.from(document.querySelectorAll('.tp-source:checked')).map(el => el.value)
   const errEl = document.getElementById('create-err')
 
+  if (!sources.length) {
+    errEl.textContent = 'Select at least one source'
+    errEl.classList.remove('hidden')
+    return
+  }
+
   try {
-    const topic = await createTopic(name, keywords)
+    const topic = await createTopic(name, keywords, sources)
     if (topic) {
       toggleCreatePanel()
       document.getElementById('tp-name').value = ''
