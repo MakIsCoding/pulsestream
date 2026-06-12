@@ -664,7 +664,7 @@ function _lpPipeline() {
          <div class="flex sm:hidden justify-center py-1 conn-${i + 1}">${connIconV}</div>`
       : ''
     return `
-      <div class="flex flex-col sm:flex-row items-center">
+      <div class="flex flex-col sm:flex-row items-center w-full sm:w-auto">
         <div class="${s.cls} w-full sm:w-36 h-[140px] sm:h-36 flex flex-col items-center justify-center border rounded-xl p-4 text-center bg-slate-900 transition-colors overflow-hidden">
           <div class="w-9 h-9 rounded-lg border ${s.accent} flex items-center justify-center mx-auto mb-2.5">
             <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">${s.icon}</svg>
@@ -684,7 +684,7 @@ function _lpPipeline() {
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">From raw content to live insight</h2>
       <p class="text-slate-400 max-w-lg mx-auto">Five decoupled stages. Each independently scalable.</p>
     </div>
-    <div class="flex flex-col sm:flex-row items-center justify-center gap-0 overflow-x-auto pb-2">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-center gap-0 overflow-x-auto pb-2">
       ${stageHtml}
     </div>
     <p class="text-center text-xs text-slate-600 mt-10">
