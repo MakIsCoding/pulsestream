@@ -101,7 +101,7 @@ function logout() {
   state.stats = { topic_count: 0, mention_count: 0 }
   localStorage.removeItem('ps_token')
   disconnectWs()
-  navigate('login')
+  renderLandingPage()
 }
 
 async function loadUser() {
@@ -294,7 +294,7 @@ function handleLiveMention(mention) {
       sentiment_score: mention.sentiment_score,
       sentiment_label: mention.sentiment_label,
       entities: mention.entities || [],
-      url: null,
+      url: mention.url || null,
       author: null,
       ingested_at: new Date().toISOString(),
       analyzed_at: new Date().toISOString(),
@@ -475,6 +475,24 @@ const _psLogo = `<div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center 
 </div>`
 
 function _lpNav() {
+  const authArea = state.token
+    ? `${state.user ? `<span class="hidden sm:block text-xs text-slate-500">${escHtml(state.user.email)}</span>` : ''}
+       <button onclick="navigate('dashboard')"
+         class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+         Dashboard →
+       </button>
+       <button onclick="logout()"
+         class="text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium">
+         Sign out
+       </button>`
+    : `<button onclick="renderLoginPage('login')"
+         class="text-sm text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium">
+         Sign In
+       </button>
+       <button onclick="renderLoginPage('register')"
+         class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+         Get Started
+       </button>`
   return `
 <nav class="fixed top-0 inset-x-0 z-50 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/60">
   <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
@@ -487,14 +505,7 @@ function _lpNav() {
          class="hidden sm:flex items-center gap-1.5 text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors">
         ${_ghIcon} GitHub
       </a>
-      <button onclick="renderLoginPage('login')"
-        class="text-sm text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium">
-        Sign In
-      </button>
-      <button onclick="renderLoginPage('register')"
-        class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
-        Get Started
-      </button>
+      ${authArea}
     </div>
   </div>
 </nav>`
@@ -525,10 +536,15 @@ function _lpHero() {
       Watch your dashboard update live over WebSocket — all on $0 infrastructure.
     </p>
     <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-16">
-      <button onclick="renderLoginPage('register')"
-        class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
-        Start monitoring free →
-      </button>
+      ${state.token
+        ? `<button onclick="navigate('dashboard')"
+             class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+             Go to dashboard →
+           </button>`
+        : `<button onclick="renderLoginPage('register')"
+             class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+             Start monitoring free →
+           </button>`}
       <a href="${_GH}" target="_blank" rel="noopener"
         class="w-full sm:w-auto flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 text-slate-300 hover:text-white font-medium px-8 py-3 rounded-xl text-sm transition-colors">
         ${_ghIcon} View source code
@@ -595,7 +611,7 @@ function _lpPipeline() {
       accent: 'bg-sky-500/10 border-sky-500/30 text-sky-400',
       icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>`,
       name: 'Ingest',
-      desc: '4 sources · 2 min cycle',
+      desc: '4 sources · 2 min',
     },
     {
       cls: 'stage-2',
@@ -641,7 +657,7 @@ function _lpPipeline() {
       : ''
     return `
       <div class="flex flex-col sm:flex-row items-center">
-        <div class="${s.cls} w-full sm:w-36 min-h-[120px] sm:h-36 flex flex-col items-center justify-center border rounded-xl p-4 text-center bg-slate-900 transition-colors">
+        <div class="${s.cls} w-full sm:w-36 h-[140px] sm:h-36 flex flex-col items-center justify-center border rounded-xl p-4 text-center bg-slate-900 transition-colors overflow-hidden">
           <div class="w-9 h-9 rounded-lg border ${s.accent} flex items-center justify-center mx-auto mb-2.5">
             <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">${s.icon}</svg>
           </div>
@@ -803,10 +819,15 @@ function _lpCta() {
         Free account. No credit card. 4 live sources ingesting right now.
       </p>
       <div class="flex flex-col sm:flex-row items-center justify-center gap-3">
-        <button onclick="renderLoginPage('register')"
-          class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
-          Create free account →
-        </button>
+        ${state.token
+          ? `<button onclick="navigate('dashboard')"
+               class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+               Go to dashboard →
+             </button>`
+          : `<button onclick="renderLoginPage('register')"
+               class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+               Create free account →
+             </button>`}
         <a href="${_GH}" target="_blank" rel="noopener"
           class="w-full sm:w-auto flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 text-slate-300 hover:text-white font-medium px-8 py-3 rounded-xl text-sm transition-colors">
           ${_ghIcon} Browse the code
@@ -851,16 +872,23 @@ function renderLandingPage() {
 // ─── Page: Login / Register ────────────────────────────────────────────────────
 function renderLoginPage(mode = 'login') {
   document.getElementById('app').innerHTML = `
-    <div class="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-b from-slate-900 to-slate-950">
+    <div class="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-b from-slate-900 to-slate-950 relative">
+      <button onclick="renderLandingPage()"
+        class="absolute top-4 left-4 flex items-center gap-1.5 text-sm text-slate-500 hover:text-white transition-colors">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+        Home
+      </button>
       <div class="mb-8 text-center">
-        <div class="flex items-center justify-center gap-2.5 mb-3">
+        <button onclick="renderLandingPage()" class="inline-flex items-center justify-center gap-2.5 mb-3 hover:opacity-80 transition-opacity">
           <div class="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg">
             <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
           </div>
           <span class="text-2xl font-bold tracking-tight text-white">PulseStream</span>
-        </div>
+        </button>
         <p class="text-slate-500 text-sm">Real-time topic intelligence</p>
       </div>
 
@@ -1603,11 +1631,6 @@ function renderMentionCard(m) {
     ? '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-500 border border-slate-600">analyzing…</span>'
     : ''
 
-  const titleEl = m.url
-    ? `<a href="${escHtml(m.url)}" target="_blank" rel="noopener noreferrer"
-         class="hover:text-indigo-400 transition-colors">${escHtml(m.title || 'Untitled')}</a>`
-    : escHtml(m.title || 'Untitled')
-
   const entities = m.entities && m.entities.length
     ? `<div class="flex flex-wrap gap-1 mt-2.5">
          ${m.entities.slice(0, 8).map(e =>
@@ -1616,15 +1639,14 @@ function renderMentionCard(m) {
        </div>`
     : ''
 
-  return `
-    <div class="bg-slate-800/70 border ${isNew ? 'border-indigo-500/40 shadow-indigo-900/20 shadow-lg' : 'border-slate-700'} rounded-2xl p-4 ${isNew ? 'fade-in' : ''}">
+  const inner = `
       <div class="flex flex-wrap items-center gap-2 mb-2.5">
         ${newBadge}
         ${sourceChip(m.source)}
         ${isPending ? pendingBadge : sentimentChip(m.sentiment_label, m.sentiment_score)}
         <span class="ml-auto text-xs text-slate-600">${timeAgo(m.ingested_at)}</span>
       </div>
-      <h4 class="text-sm font-semibold text-white leading-snug">${titleEl}</h4>
+      <h4 class="text-sm font-semibold text-white leading-snug">${escHtml(m.title || 'Untitled')}</h4>
       ${m.summary
         ? `<p class="text-xs text-slate-400 mt-1.5 leading-relaxed">${escHtml(m.summary)}</p>`
         : ''}
@@ -1632,8 +1654,13 @@ function renderMentionCard(m) {
       ${m.author
         ? `<p class="text-xs text-slate-600 mt-2">by ${escHtml(m.author)}</p>`
         : ''}
-    </div>
   `
+
+  const baseCls = `bg-slate-800/70 border ${isNew ? 'border-indigo-500/40 shadow-indigo-900/20 shadow-lg' : 'border-slate-700'} rounded-2xl p-4 ${isNew ? 'fade-in' : ''}`
+  return m.url
+    ? `<a href="${escHtml(m.url)}" target="_blank" rel="noopener noreferrer"
+         class="block ${baseCls} hover:border-slate-500 transition-colors">${inner}</a>`
+    : `<div class="${baseCls}">${inner}</div>`
 }
 
 async function loadMoreMentions() {
@@ -1655,14 +1682,15 @@ function renderHeader() {
   return `
     <header class="sticky top-0 z-40 bg-slate-900/80 backdrop-blur-sm border-b border-slate-800">
       <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
-        <div class="flex items-center gap-2.5">
+        <button onclick="renderLandingPage()"
+          class="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
           <div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
             <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
           </div>
           <span class="font-bold text-sm text-white tracking-tight">PulseStream</span>
-        </div>
+        </button>
         <div class="flex items-center gap-4">
           ${state.user ? `<span class="text-xs text-slate-500 hidden sm:block">${escHtml(state.user.email)}</span>` : ''}
           <button onclick="showPasswordModal()"
@@ -1916,7 +1944,7 @@ async function init() {
   } catch {
     // Don't call logout() on transient errors — the token stays valid.
     // If it was a real 401, api() already called logout() above.
-    navigate('login')
+    renderLandingPage()
   }
 }
 

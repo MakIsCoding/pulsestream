@@ -176,6 +176,7 @@ class MentionAnalyzedEvent(BaseModel):
     user_id: UUID
     source: str
     title: str | None
+    url: str | None = None
     sentiment_score: float | None
     sentiment_label: str | None
     entities: list[str] | None

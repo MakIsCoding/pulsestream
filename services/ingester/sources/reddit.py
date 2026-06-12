@@ -37,9 +37,13 @@ async def fetch(keywords: list[str], limit: int = 20) -> list[dict[str, Any]]:
         "limit": str(limit),
         "sort": "new",
         "type": "link",
+        "t": "month",
     }
+    # Reddit requires a descriptive UA; generic ones are throttled / blocked.
+    ua = settings.reddit_user_agent or "script:pulsestream:v1.0 (by /u/pulsestream_app)"
     headers = {
-        "User-Agent": settings.reddit_user_agent or "pulsestream/0.1",
+        "User-Agent": ua,
+        "Accept": "application/json",
     }
 
     async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
@@ -47,11 +51,12 @@ async def fetch(keywords: list[str], limit: int = 20) -> list[dict[str, Any]]:
             response = await client.get(REDDIT_SEARCH_URL, params=params)
             response.raise_for_status()
         except httpx.HTTPError as e:
-            logger.warning("Reddit search failed: %s", e)
+            logger.warning("Reddit search failed (status=%s): %s", getattr(e, 'response', None) and e.response.status_code, e)
             return []
 
     payload = response.json()
     children = payload.get("data", {}).get("children", [])
+    logger.info("Reddit search for %r returned %d posts", query, len(children))
     return [_normalize(child["data"]) for child in children if child.get("data")]
 
 

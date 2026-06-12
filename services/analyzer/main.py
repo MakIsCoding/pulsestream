@@ -244,6 +244,7 @@ async def _persist_and_emit(
         "user_id": str(user_id),
         "source": source,
         "title": raw_event.get("title"),
+        "url": raw_event.get("url"),
         "sentiment_score": sentiment_score,
         "sentiment_label": sentiment_label,
         "entities": entities,
