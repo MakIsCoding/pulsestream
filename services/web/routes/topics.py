@@ -233,11 +233,11 @@ async def get_topic_trend(
     """Return avg sentiment bucketed by hour (default) or day over a rolling window."""
     await _load_owned_topic(db, topic_id, current_user.id)
 
-    interval_map = {"24h": "24 hours", "7d": "7 days"}
-    interval = interval_map[window]
+    # Both bucket and window are validated by pattern= above — safe to embed as SQL literals.
+    # Avoid CAST(:interval AS INTERVAL) — asyncpg infers param type as INTERVAL and
+    # can't encode a Python string, causing a runtime error.
+    interval_sql = {"24h": "24 hours", "7d": "7 days"}[window]
 
-    # date_trunc field arg must be a SQL literal, not a bind parameter.
-    # bucket is validated by the pattern= constraint above.
     try:
         rows = (
             await db.execute(
@@ -248,29 +248,28 @@ async def get_topic_trend(
                         CAST(COUNT(*) AS INTEGER)            AS cnt
                     FROM mentions
                     WHERE topic_id = CAST(:topic_id AS uuid)
-                      AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
+                      AND ingested_at >= NOW() - INTERVAL '{interval_sql}'
                       AND analyzed_at IS NOT NULL
                     GROUP BY 1
                     ORDER BY 1
                 """),
-                {"topic_id": str(topic_id), "interval": interval},
+                {"topic_id": str(topic_id)},
             )
         ).fetchall()
 
-        # Source breakdown and overall stats for the same window.
         src_rows = (
             await db.execute(
-                text("""
+                text(f"""
                     SELECT source,
                            CAST(COUNT(*) AS INTEGER)  AS cnt,
                            AVG(sentiment_score)       AS avg_score
                     FROM mentions
                     WHERE topic_id = CAST(:topic_id AS uuid)
-                      AND ingested_at >= NOW() - CAST(:interval AS INTERVAL)
+                      AND ingested_at >= NOW() - INTERVAL '{interval_sql}'
                       AND analyzed_at IS NOT NULL
                     GROUP BY source
                 """),
-                {"topic_id": str(topic_id), "interval": interval},
+                {"topic_id": str(topic_id)},
             )
         ).fetchall()
     except Exception:

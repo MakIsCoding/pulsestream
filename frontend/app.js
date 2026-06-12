@@ -56,7 +56,8 @@ async function api(path, opts = {}) {
   if (res.status === 401) { logout(); return null }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'Request failed')
+    const detail = Array.isArray(err.detail) ? JSON.stringify(err.detail) : err.detail
+    throw new Error(detail || `HTTP ${res.status}`)
   }
   if (res.status === 204) return null
   return res.json()
