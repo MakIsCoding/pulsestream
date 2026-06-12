@@ -1359,10 +1359,13 @@ function renderTopicPage(topicId) {
     state.trendChart = null
   }
 
+  // Only reset filters when navigating to a different topic
+  if (state.currentTopicId !== topicId) {
+    state.mentionFilter = { source: null, sentiment: null }
+    state.mentionsOffset = 0
+  }
   state.currentTopicId = topicId
   state.newMentionIds = new Set()
-  state.mentionFilter = { source: null, sentiment: null }
-  state.mentionsOffset = 0
 
   const topic = state.topics.find(t => t.id === topicId)
 
