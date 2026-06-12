@@ -195,13 +195,14 @@ async function refreshTrend(topicId) {
   try {
     const t = await fetchTrend(topicId)
     renderTrendChart(t)
-  } catch {
+  } catch (e) {
+    console.error('Trend error:', e)
     const s = document.getElementById('trend-section')
     if (s) s.innerHTML = `
       <div class="text-center py-4">
-        <p class="text-xs text-slate-600 mb-2">Trend unavailable</p>
+        <p class="text-xs text-red-400 mb-1">Trend error: ${escHtml(e?.message || String(e))}</p>
         <button onclick="refreshTrend('${topicId}')"
-          class="text-xs text-indigo-400 hover:text-indigo-300 underline">Retry</button>
+          class="text-xs text-indigo-400 hover:text-indigo-300 underline mt-1 block">Retry</button>
       </div>`
   }
 }
@@ -220,6 +221,28 @@ async function refreshSummary(topicId) {
       }, 12000)
     }
   } catch {}
+}
+
+async function forceRefreshSummary(topicId) {
+  if (!topicId) return
+  // Show spinner immediately
+  const section = document.getElementById('digest-section')
+  if (section) section.innerHTML = `
+    <div class="text-center py-4">
+      <svg class="w-4 h-4 animate-spin text-slate-600 mx-auto mb-2" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      </svg>
+      <p class="text-xs text-slate-500">Regenerating summary…</p>
+    </div>`
+  // Kick off regeneration on backend (force=true bypasses 30-min stale check)
+  try { await api(`/topics/${topicId}/digest/latest?force=true`) } catch {}
+  // Fetch fresh result after backend has had time to generate
+  setTimeout(() => {
+    if (state.currentTopicId === topicId && state.insightTab === 'summary') {
+      refreshSummary(topicId)
+    }
+  }, 12000)
 }
 
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
@@ -418,6 +441,13 @@ function renderLoginPage(mode = 'login') {
               class="mt-5 w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-60">
               ${mode === 'login' ? 'Sign In' : 'Create Account'}
             </button>
+            ${mode === 'login' ? `
+            <p class="mt-4 text-center">
+              <button type="button" onclick="renderForgotPage()"
+                class="text-xs text-slate-500 hover:text-indigo-400 transition-colors">
+                Forgot your password?
+              </button>
+            </p>` : ''}
           </form>
         </div>
       </div>
@@ -852,7 +882,16 @@ function renderDigestCard(digest) {
     <div class="fade-in">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm font-semibold text-white">What people are saying</h3>
-        <span class="text-xs text-slate-600">${digest.mention_count} mentions · ${timeAgo(digest.generated_at)}</span>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-600">${digest.mention_count} mentions · ${timeAgo(digest.generated_at)}</span>
+          <button onclick="forceRefreshSummary('${digest.topic_id}')" title="Regenerate summary"
+            class="text-slate-600 hover:text-indigo-400 transition-colors">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       ${digest.summary
@@ -959,6 +998,12 @@ function renderTrendChart(trend) {
 
   const canvas = document.getElementById('trend-chart')
   if (!canvas) return
+
+  // Destroy previous instance so Chart.js doesn't throw "canvas already in use"
+  if (state.trendChart) {
+    state.trendChart.destroy()
+    state.trendChart = null
+  }
   const labels = trend.points.map(p => {
     const d = new Date(p.bucket)
     return `${d.getHours().toString().padStart(2, '0')}:00`
@@ -1134,6 +1179,10 @@ function renderHeader() {
         </div>
         <div class="flex items-center gap-4">
           ${state.user ? `<span class="text-xs text-slate-500 hidden sm:block">${escHtml(state.user.email)}</span>` : ''}
+          <button onclick="showPasswordModal()"
+            class="text-xs text-slate-400 hover:text-white transition-colors">
+            Change password
+          </button>
           <button onclick="logout()"
             class="text-xs text-slate-400 hover:text-white transition-colors">
             Sign out
@@ -1144,8 +1193,230 @@ function renderHeader() {
   `
 }
 
+function showPasswordModal() {
+  const existing = document.getElementById('pw-modal')
+  if (existing) existing.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'pw-modal'
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm'
+  modal.innerHTML = `
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+      <h2 class="text-sm font-semibold text-white mb-4">Change password</h2>
+      <div class="flex flex-col gap-3">
+        <input id="pw-current" type="password" placeholder="Current password" autocomplete="current-password"
+          class="w-full bg-slate-700/60 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"/>
+        <input id="pw-new" type="password" placeholder="New password (min 8 chars)" autocomplete="new-password"
+          class="w-full bg-slate-700/60 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"/>
+        <input id="pw-confirm" type="password" placeholder="Confirm new password" autocomplete="new-password"
+          class="w-full bg-slate-700/60 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"/>
+        <p id="pw-error" class="text-xs text-red-400 hidden"></p>
+      </div>
+      <div class="flex gap-2 mt-5">
+        <button onclick="submitPasswordChange()"
+          class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2 rounded-lg transition-colors">
+          Update password
+        </button>
+        <button onclick="document.getElementById('pw-modal').remove()"
+          class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold py-2 rounded-lg transition-colors">
+          Cancel
+        </button>
+      </div>
+    </div>
+  `
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  document.body.appendChild(modal)
+  document.getElementById('pw-current').focus()
+}
+
+async function submitPasswordChange() {
+  const current = document.getElementById('pw-current').value
+  const newPw = document.getElementById('pw-new').value
+  const confirm = document.getElementById('pw-confirm').value
+  const errEl = document.getElementById('pw-error')
+
+  errEl.classList.add('hidden')
+
+  if (!current || !newPw || !confirm) {
+    errEl.textContent = 'All fields are required'
+    errEl.classList.remove('hidden')
+    return
+  }
+  if (newPw.length < 8) {
+    errEl.textContent = 'New password must be at least 8 characters'
+    errEl.classList.remove('hidden')
+    return
+  }
+  if (newPw !== confirm) {
+    errEl.textContent = 'New passwords do not match'
+    errEl.classList.remove('hidden')
+    return
+  }
+
+  try {
+    await api('/auth/password', {
+      method: 'PATCH',
+      body: JSON.stringify({ current_password: current, new_password: newPw }),
+    })
+    document.getElementById('pw-modal').remove()
+    showToast('Password updated', 'Your password has been changed successfully')
+  } catch (e) {
+    errEl.textContent = e.message
+    errEl.classList.remove('hidden')
+  }
+}
+
+// ─── Page: Forgot Password ─────────────────────────────────────────────────────
+function renderForgotPage() {
+  document.getElementById('app').innerHTML = `
+    <div class="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-b from-slate-900 to-slate-950">
+      <div class="mb-8 text-center">
+        <div class="flex items-center justify-center gap-2.5 mb-3">
+          <div class="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg">
+            <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
+          <span class="text-2xl font-bold tracking-tight text-white">PulseStream</span>
+        </div>
+      </div>
+      <div class="w-full max-w-sm">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl">
+          <h2 class="text-sm font-semibold text-white mb-1">Reset your password</h2>
+          <p class="text-xs text-slate-500 mb-5">Enter your email and we'll send a reset link.</p>
+          <div id="forgot-success" class="hidden text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-2.5 mb-4">
+            Check your inbox — a reset link is on its way.
+          </div>
+          <form id="forgot-form" onsubmit="handleForgotSubmit(event)">
+            <input id="forgot-email" type="email" required autocomplete="email"
+              placeholder="you@example.com"
+              class="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition" />
+            <div id="forgot-error" class="hidden mt-3 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2.5"></div>
+            <button id="forgot-btn" type="submit"
+              class="mt-4 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors disabled:opacity-60">
+              Send reset link
+            </button>
+          </form>
+          <p class="mt-4 text-center">
+            <button onclick="renderLoginPage('login')"
+              class="text-xs text-slate-500 hover:text-indigo-400 transition-colors">
+              Back to sign in
+            </button>
+          </p>
+        </div>
+      </div>
+    </div>
+  `
+  document.getElementById('forgot-email').focus()
+}
+
+async function handleForgotSubmit(evt) {
+  evt.preventDefault()
+  const email = document.getElementById('forgot-email').value.trim()
+  const btn = document.getElementById('forgot-btn')
+  const errEl = document.getElementById('forgot-error')
+  const successEl = document.getElementById('forgot-success')
+
+  btn.disabled = true
+  btn.textContent = 'Sending…'
+  errEl.classList.add('hidden')
+
+  try {
+    await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) })
+    document.getElementById('forgot-form').classList.add('hidden')
+    successEl.classList.remove('hidden')
+  } catch (e) {
+    errEl.textContent = e.message
+    errEl.classList.remove('hidden')
+    btn.disabled = false
+    btn.textContent = 'Send reset link'
+  }
+}
+
+// ─── Page: Reset Password ──────────────────────────────────────────────────────
+function renderResetPage(token) {
+  document.getElementById('app').innerHTML = `
+    <div class="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-b from-slate-900 to-slate-950">
+      <div class="mb-8 text-center">
+        <div class="flex items-center justify-center gap-2.5 mb-3">
+          <div class="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg">
+            <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
+          <span class="text-2xl font-bold tracking-tight text-white">PulseStream</span>
+        </div>
+      </div>
+      <div class="w-full max-w-sm">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl">
+          <h2 class="text-sm font-semibold text-white mb-1">Set new password</h2>
+          <p class="text-xs text-slate-500 mb-5">Choose a strong password of at least 8 characters.</p>
+          <form id="reset-form" onsubmit="handleResetSubmit(event,'${token}')">
+            <div class="space-y-3">
+              <input id="reset-pw" type="password" required minlength="8" autocomplete="new-password"
+                placeholder="New password (min 8 chars)"
+                class="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition" />
+              <input id="reset-confirm" type="password" required autocomplete="new-password"
+                placeholder="Confirm new password"
+                class="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition" />
+            </div>
+            <div id="reset-error" class="hidden mt-3 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2.5"></div>
+            <button id="reset-btn" type="submit"
+              class="mt-4 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors disabled:opacity-60">
+              Update password
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `
+  document.getElementById('reset-pw').focus()
+}
+
+async function handleResetSubmit(evt, token) {
+  evt.preventDefault()
+  const pw = document.getElementById('reset-pw').value
+  const confirm = document.getElementById('reset-confirm').value
+  const btn = document.getElementById('reset-btn')
+  const errEl = document.getElementById('reset-error')
+
+  errEl.classList.add('hidden')
+
+  if (pw !== confirm) {
+    errEl.textContent = 'Passwords do not match'
+    errEl.classList.remove('hidden')
+    return
+  }
+
+  btn.disabled = true
+  btn.textContent = 'Updating…'
+
+  try {
+    await api('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, new_password: pw }),
+    })
+    // Clear the token from the URL then go to login
+    history.replaceState(null, '', '/')
+    renderLoginPage('login')
+    showToast('Password updated', 'You can now sign in with your new password')
+  } catch (e) {
+    errEl.textContent = e.message
+    errEl.classList.remove('hidden')
+    btn.disabled = false
+    btn.textContent = 'Update password'
+  }
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
+  // Handle password-reset links: /?reset_token=xxx
+  const resetToken = new URLSearchParams(location.search).get('reset_token')
+  if (resetToken) {
+    renderResetPage(resetToken)
+    return
+  }
+
   if (!state.token) {
     navigate('login')
     return

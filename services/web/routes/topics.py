@@ -192,10 +192,11 @@ async def delete_topic(
 async def get_latest_digest(
     topic_id: UUID,
     background_tasks: BackgroundTasks,
+    force: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TopicDigest | None:
-    """Return the most recent digest; regenerate in background if stale or missing."""
+    """Return the most recent digest; regenerate in background if stale, missing, or force=true."""
     topic = await _load_owned_topic(db, topic_id, current_user.id)
     result = await db.execute(
         select(TopicDigest)
@@ -206,7 +207,7 @@ async def get_latest_digest(
     digest = result.scalar_one_or_none()
 
     stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
-    if digest is None or digest.generated_at < stale_cutoff:
+    if force or digest is None or digest.generated_at < stale_cutoff:
         background_tasks.add_task(_regenerate_digest, topic)
 
     return digest
