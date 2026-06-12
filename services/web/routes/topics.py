@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.config import settings
 from shared.db import get_db
 from shared.kafka_client import publish_event
-from shared.models import Topic, TopicDigest, User
+from shared.models import Mention, Topic, TopicDigest, User
 from shared.schemas import (
     TopicCreate,
     TopicCreatedEvent,
@@ -99,14 +99,50 @@ async def create_topic(
 async def list_topics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[Topic]:
-    """List all topics belonging to the current user."""
-    result = await db.execute(
+) -> list[TopicRead]:
+    """List all topics belonging to the current user, with 24 h mention stats."""
+    topics_result = await db.execute(
         select(Topic)
         .where(Topic.user_id == current_user.id)
         .order_by(Topic.created_at.desc())
     )
-    return list(result.scalars().all())
+    topics = list(topics_result.scalars().all())
+    if not topics:
+        return []
+
+    topic_ids = [t.id for t in topics]
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    # Last-mention time across all time (for "last active X ago")
+    last_at_rows = (await db.execute(
+        select(Mention.topic_id, func.max(Mention.ingested_at).label("last_at"))
+        .where(Mention.topic_id.in_(topic_ids))
+        .group_by(Mention.topic_id)
+    )).all()
+    last_at_map = {r.topic_id: r.last_at for r in last_at_rows}
+
+    # Count ingested in last 24 h (for "+N today")
+    count_rows = (await db.execute(
+        select(Mention.topic_id, func.count(Mention.id).label("cnt"))
+        .where(Mention.topic_id.in_(topic_ids), Mention.ingested_at >= cutoff)
+        .group_by(Mention.topic_id)
+    )).all()
+    count_map = {r.topic_id: r.cnt for r in count_rows}
+
+    return [
+        TopicRead(
+            id=t.id,
+            user_id=t.user_id,
+            name=t.name,
+            keywords=t.keywords,
+            sources=t.sources,
+            is_active=t.is_active,
+            created_at=t.created_at,
+            mention_count_24h=count_map.get(t.id, 0),
+            last_mention_at=last_at_map.get(t.id),
+        )
+        for t in topics
+    ]
 
 
 @router.get("/{topic_id}", response_model=TopicRead)

@@ -8,9 +8,11 @@ This service only reads them — paginated, filtered by topic, ordered
 newest first. The user must own the topic.
 
 Endpoints:
-- GET /mentions  — paginated mentions for a topic
+- GET /mentions               — paginated mentions for a topic
+- GET /mentions/source-activity — per-source counts for the last 24 h
 """
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -27,6 +29,22 @@ from services.web.security.dependencies import get_current_user
 router = APIRouter(prefix="/mentions", tags=["mentions"])
 
 
+@router.get("/source-activity")
+async def source_activity(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Per-source mention counts ingested in the last 24 h for the current user."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    rows = (await db.execute(
+        select(Mention.source, func.count(Mention.id).label("cnt"))
+        .join(Topic, Topic.id == Mention.topic_id)
+        .where(Topic.user_id == current_user.id, Mention.ingested_at >= cutoff)
+        .group_by(Mention.source)
+    )).all()
+    return {r.source: r.cnt for r in rows}
+
+
 @router.get("", response_model=MentionsPage)
 async def list_mentions(
     topic_id: UUID = Query(..., description="Topic to fetch mentions for"),
@@ -34,6 +52,12 @@ async def list_mentions(
     offset: int = Query(0, ge=0),
     only_analyzed: bool = Query(
         True, description="If true, exclude mentions that haven't been analyzed yet"
+    ),
+    source: str | None = Query(None, description="Filter by source name"),
+    sentiment_label: str | None = Query(
+        None,
+        pattern="^(positive|negative|neutral)$",
+        description="Filter by sentiment label",
     ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -63,6 +87,10 @@ async def list_mentions(
     conditions = [Mention.topic_id == topic_id]
     if only_analyzed:
         conditions.append(Mention.analyzed_at.is_not(None))
+    if source:
+        conditions.append(Mention.source == source)
+    if sentiment_label:
+        conditions.append(Mention.sentiment_label == sentiment_label)
 
     # Total count (for pagination metadata)
     total_result = await db.execute(

@@ -108,6 +108,8 @@ class TopicRead(BaseModel):
     sources: list[str]
     is_active: bool
     created_at: datetime
+    mention_count_24h: int = 0
+    last_mention_at: datetime | None = None
 
 
 # ============================================

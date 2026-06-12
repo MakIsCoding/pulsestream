@@ -9,6 +9,7 @@ const state = {
   mentions: [],
   mentionsTotal: 0,
   mentionsOffset: 0,
+  mentionFilter: { source: null, sentiment: null },
   ws: null,
   wsConnected: false,
   newMentionIds: new Set(),
@@ -167,8 +168,15 @@ function formatStats() {
 // ─── Mentions ──────────────────────────────────────────────────────────────────
 async function fetchMentions(topicId, reset = false) {
   const offset = reset ? 0 : state.mentionsOffset
-  const url = `/mentions?topic_id=${topicId}&limit=20&offset=${offset}&only_analyzed=false`
-  const data = await api(url)
+  const params = new URLSearchParams({
+    topic_id: topicId,
+    limit: '20',
+    offset: String(offset),
+    only_analyzed: 'false',
+  })
+  if (state.mentionFilter.source)    params.set('source', state.mentionFilter.source)
+  if (state.mentionFilter.sentiment) params.set('sentiment_label', state.mentionFilter.sentiment)
+  const data = await api(`/mentions?${params}`)
   if (!data) return
   if (reset) {
     state.mentions = data.items
@@ -977,13 +985,23 @@ function renderDashboardPage() {
           <h2 class="text-lg font-semibold text-white">Your Topics</h2>
           <p id="stats-counter" class="text-xs text-slate-500 mt-0.5">${statsText}</p>
         </div>
-        <button onclick="toggleCreatePanel()"
-          class="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3.5 py-2 rounded-lg transition-colors">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
-          </svg>
-          New Topic
-        </button>
+        <div class="flex items-center gap-2">
+          <button onclick="showStatusModal()"
+            title="System health"
+            class="p-2 text-slate-500 hover:text-slate-300 hover:bg-slate-800 rounded-lg transition-colors border border-transparent hover:border-slate-700">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+            </svg>
+          </button>
+          <button onclick="toggleCreatePanel()"
+            class="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3.5 py-2 rounded-lg transition-colors">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+            </svg>
+            New Topic <span class="hidden sm:inline text-indigo-300/60 text-xs ml-1">N</span>
+          </button>
+        </div>
       </div>
 
       <!-- Create topic panel (hidden by default) -->
@@ -1046,16 +1064,60 @@ function renderDashboardPage() {
   }).catch(() => {})
 }
 
+function renderSkeletonTopicsGrid() {
+  const card = `
+    <div class="bg-slate-800/70 border border-slate-700 rounded-2xl p-5 flex flex-col gap-4">
+      <div class="flex items-start justify-between gap-2">
+        <div class="skeleton h-4 w-32 rounded"></div>
+        <div class="skeleton w-2 h-2 rounded-full mt-1"></div>
+      </div>
+      <div class="flex gap-1.5">
+        <div class="skeleton h-5 w-14 rounded-md"></div>
+        <div class="skeleton h-5 w-16 rounded-md"></div>
+        <div class="skeleton h-5 w-10 rounded-md"></div>
+      </div>
+      <div class="flex gap-1">
+        <div class="skeleton h-5 w-20 rounded"></div>
+        <div class="skeleton h-5 w-16 rounded"></div>
+      </div>
+      <div class="flex gap-2 mt-auto">
+        <div class="skeleton flex-1 h-8 rounded-lg"></div>
+        <div class="skeleton w-8 h-8 rounded-lg"></div>
+        <div class="skeleton w-8 h-8 rounded-lg"></div>
+      </div>
+    </div>`
+  return `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">${card.repeat(3)}</div>`
+}
+
 function renderTopicsGrid() {
   if (!state.topics.length) {
     return `
-      <div class="text-center py-20 text-slate-600">
-        <svg class="w-14 h-14 mx-auto mb-4 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-        </svg>
-        <p class="text-sm font-medium text-slate-500">No topics yet</p>
-        <p class="text-xs text-slate-600 mt-1">Create your first topic to start monitoring</p>
+      <div class="text-center py-20 max-w-sm mx-auto">
+        <div class="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-5">
+          <svg class="w-8 h-8 text-indigo-400/60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+          </svg>
+        </div>
+        <h3 class="text-base font-semibold text-white mb-2">Create your first topic</h3>
+        <p class="text-sm text-slate-400 leading-relaxed mb-6">
+          Topics define what you want to track. Give it a name like <span class="text-slate-300 font-medium">"AI Agents"</span>
+          and add keywords — we'll monitor 4 sources every 2 minutes and push live mentions to your dashboard.
+        </p>
+        <button onclick="toggleCreatePanel()"
+          class="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all hover:shadow-lg hover:shadow-indigo-600/25 active:scale-95">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+          </svg>
+          Create a topic
+        </button>
+        <div class="mt-8 grid grid-cols-3 gap-3 text-center">
+          ${[['4', 'sources'], ['2 min', 'cadence'], ['Live', 'WebSocket']].map(([v, l]) => `
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl py-3">
+              <p class="text-sm font-bold text-white">${v}</p>
+              <p class="text-xs text-slate-500 mt-0.5">${l}</p>
+            </div>`).join('')}
+        </div>
       </div>
     `
   }
@@ -1068,17 +1130,32 @@ function renderTopicsGrid() {
 }
 
 function renderTopicCard(topic) {
+  const isPending = topic._pending === true
+
   const chips = topic.keywords.slice(0, 5).map(k =>
     `<span class="inline-block bg-slate-700/80 text-slate-300 text-xs px-2 py-0.5 rounded-md">${escHtml(k)}</span>`
   ).join('')
   const overflow = topic.keywords.length > 5
     ? `<span class="text-xs text-slate-600">+${topic.keywords.length - 5}</span>` : ''
 
-  const pausedPill = !topic.is_active
+  const pausedPill = !topic.is_active && !isPending
     ? `<span class="text-xs px-1.5 py-0.5 bg-amber-500/15 text-amber-400 border border-amber-500/25 rounded font-medium">paused</span>`
     : ''
+  const pendingPill = isPending
+    ? `<span class="text-xs px-1.5 py-0.5 bg-slate-700 text-slate-400 border border-slate-600 rounded font-medium">creating…</span>`
+    : ''
 
-  const dotColor = topic.is_active ? 'bg-green-400 pulse-dot' : 'bg-amber-500'
+  const dotColor = isPending ? 'bg-slate-600 animate-pulse'
+    : topic.is_active ? 'bg-green-400 pulse-dot' : 'bg-amber-500'
+
+  // Activity stats row: "+N today · last X ago"
+  const count24h = topic.mention_count_24h || 0
+  const lastAt   = topic.last_mention_at || null
+  const activityRow = !isPending ? `
+    <div class="flex items-center gap-1.5 text-xs text-slate-500">
+      <span class="${count24h > 0 ? 'text-indigo-400 font-medium' : ''}">+${count24h} today</span>
+      ${lastAt ? `<span class="text-slate-700">·</span><span>last ${timeAgo(lastAt)}</span>` : ''}
+    </div>` : ''
 
   // Pause icon (two vertical bars) when active; play icon (triangle) when paused.
   const pauseIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1092,38 +1169,51 @@ function renderTopicCard(topic) {
       d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
   </svg>`
 
+  const actionRow = !isPending ? `
+    <div class="flex items-center gap-2 mt-auto">
+      <button onclick="openTopic('${topic.id}')"
+        class="flex-1 bg-indigo-600/20 hover:bg-indigo-600/35 border border-indigo-600/30 text-indigo-400 text-xs font-medium py-2 rounded-lg transition-colors">
+        View Mentions
+      </button>
+      <button onclick="toggleTopicPause('${topic.id}')"
+        title="${topic.is_active ? 'Pause ingestion' : 'Resume ingestion'}"
+        class="p-2 text-slate-600 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors">
+        ${topic.is_active ? pauseIcon : playIcon}
+      </button>
+      <button onclick="confirmDelete('${topic.id}','${escHtml(topic.name).replace(/'/g, "\\'")}')"
+        title="Delete topic"
+        class="p-2 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+      </button>
+    </div>` : `
+    <div class="flex items-center gap-2 mt-auto">
+      <div class="flex-1 flex items-center justify-center gap-2 border border-slate-700 text-slate-600 text-xs py-2 rounded-lg">
+        <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        Setting up…
+      </div>
+    </div>`
+
   return `
-    <div class="group bg-slate-800/70 border border-slate-700 hover:border-slate-600 rounded-2xl p-5 transition-colors flex flex-col gap-4 ${topic.is_active ? '' : 'opacity-60'}">
+    <div class="group bg-slate-800/70 border border-slate-700 hover:border-slate-600 rounded-2xl p-5 transition-colors flex flex-col gap-3 ${topic.is_active || isPending ? '' : 'opacity-60'} ${isPending ? 'fade-in' : ''}">
       <div class="flex items-start justify-between gap-2">
         <div class="flex items-center gap-2 flex-wrap min-w-0">
           <h3 class="font-semibold text-white text-sm leading-snug truncate">${escHtml(topic.name)}</h3>
-          ${pausedPill}
+          ${pausedPill}${pendingPill}
         </div>
         <span class="shrink-0 mt-0.5 w-2 h-2 rounded-full ${dotColor}"></span>
       </div>
       <div class="flex flex-wrap gap-1.5 min-h-5">${chips}${overflow}</div>
-      <div class="flex flex-wrap gap-1 mt-1">
+      <div class="flex flex-wrap gap-1">
         ${(topic.sources || ['hackernews','reddit','google_news','devto']).map(s => sourceChip(s)).join('')}
       </div>
-      <div class="flex items-center gap-2 mt-auto">
-        <button onclick="openTopic('${topic.id}')"
-          class="flex-1 bg-indigo-600/20 hover:bg-indigo-600/35 border border-indigo-600/30 text-indigo-400 text-xs font-medium py-2 rounded-lg transition-colors">
-          View Mentions
-        </button>
-        <button onclick="toggleTopicPause('${topic.id}')"
-          title="${topic.is_active ? 'Pause ingestion' : 'Resume ingestion'}"
-          class="p-2 text-slate-600 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors">
-          ${topic.is_active ? pauseIcon : playIcon}
-        </button>
-        <button onclick="confirmDelete('${topic.id}','${escHtml(topic.name).replace(/'/g, "\\'")}')"
-          title="Delete topic"
-          class="p-2 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-          </svg>
-        </button>
-      </div>
+      ${activityRow}
+      ${actionRow}
     </div>
   `
 }
@@ -1149,25 +1239,104 @@ async function handleCreateTopic(evt) {
     return
   }
 
+  // Optimistic: add a pending card immediately while the API call is in-flight
+  const tempId = `_pending_${Date.now()}`
+  const pendingTopic = {
+    id: tempId, _pending: true, name, keywords, sources,
+    is_active: true, created_at: new Date().toISOString(),
+    mention_count_24h: 0, last_mention_at: null,
+  }
+  state.topics.unshift(pendingTopic)
+  toggleCreatePanel()
+  document.getElementById('tp-name').value = ''
+  document.getElementById('tp-keywords').value = ''
+  document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
+
   try {
-    const topic = await createTopic(name, keywords, sources)
+    const topic = await api('/topics', {
+      method: 'POST',
+      body: JSON.stringify({ name, keywords, sources }),
+    })
     if (topic) {
-      toggleCreatePanel()
-      document.getElementById('tp-name').value = ''
-      document.getElementById('tp-keywords').value = ''
+      // Replace the pending card with the real one
+      const idx = state.topics.findIndex(t => t.id === tempId)
+      if (idx !== -1) state.topics[idx] = topic
+      else state.topics.unshift(topic)
+      state.stats.topic_count++
       document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
       const el = document.getElementById('stats-counter')
       if (el) el.textContent = formatStats()
       showToast('Topic created', `Tracking "${topic.name}"`)
     }
   } catch (e) {
+    // Roll back the optimistic card
+    state.topics = state.topics.filter(t => t.id !== tempId)
+    document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
+    const panel = document.getElementById('create-panel')
+    if (panel && panel.classList.contains('hidden')) toggleCreatePanel()
+    document.getElementById('tp-name').value = name
+    document.getElementById('tp-keywords').value = raw
     errEl.textContent = e.message
     errEl.classList.remove('hidden')
   }
 }
 
 function confirmDelete(id, name) {
-  if (!confirm(`Delete "${name}"?\n\nThis will also remove all associated mentions.`)) return
+  showDeleteModal(id, name)
+}
+
+function showDeleteModal(id, name) {
+  const existing = document.getElementById('delete-modal')
+  if (existing) existing.remove()
+  const modal = document.createElement('div')
+  modal.id = 'delete-modal'
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm'
+  modal.setAttribute('role', 'dialog')
+  modal.setAttribute('aria-modal', 'true')
+  modal.setAttribute('aria-labelledby', 'delete-modal-title')
+  modal.innerHTML = `
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-2xl fade-in">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-9 h-9 rounded-xl bg-red-500/15 border border-red-500/25 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+          </svg>
+        </div>
+        <div>
+          <h2 id="delete-modal-title" class="text-sm font-semibold text-white">Delete topic</h2>
+          <p class="text-xs text-slate-400 mt-0.5">This cannot be undone</p>
+        </div>
+      </div>
+      <p class="text-sm text-slate-300 mb-5">
+        Delete <span class="font-semibold text-white">"${escHtml(name)}"</span> and all its mentions?
+      </p>
+      <div class="flex gap-2">
+        <button id="delete-confirm-btn"
+          class="flex-1 bg-red-600 hover:bg-red-500 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-slate-800">
+          Delete
+        </button>
+        <button id="delete-cancel-btn"
+          class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-semibold py-2.5 rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-800">
+          Cancel
+        </button>
+      </div>
+    </div>
+  `
+  modal.addEventListener('click', e => { if (e.target === modal) closeDeleteModal() })
+  document.body.appendChild(modal)
+  document.getElementById('delete-confirm-btn').addEventListener('click', () => _executeDelete(id, name))
+  document.getElementById('delete-cancel-btn').addEventListener('click', closeDeleteModal)
+  document.getElementById('delete-confirm-btn').focus()
+}
+
+function closeDeleteModal() {
+  const modal = document.getElementById('delete-modal')
+  if (modal) modal.remove()
+}
+
+function _executeDelete(id, name) {
+  closeDeleteModal()
   deleteTopic(id)
     .then(() => {
       document.getElementById('topics-grid').innerHTML = renderTopicsGrid()
@@ -1192,6 +1361,8 @@ function renderTopicPage(topicId) {
 
   state.currentTopicId = topicId
   state.newMentionIds = new Set()
+  state.mentionFilter = { source: null, sentiment: null }
+  state.mentionsOffset = 0
 
   const topic = state.topics.find(t => t.id === topicId)
 
@@ -1277,6 +1448,41 @@ function renderTopicPage(topicId) {
             </svg>
           </div>
         </div>
+      </div>
+
+      <!-- Mentions filter bar -->
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <span class="text-xs text-slate-500 shrink-0">Filter:</span>
+        <div class="flex flex-wrap gap-1.5">
+          ${['hackernews','reddit','google_news','devto'].map(s => {
+            const labels = { google_news: 'google news', devto: 'dev.to' }
+            const active = state.mentionFilter.source === s
+            return `<button onclick="setMentionFilter('source','${s}')"
+              class="text-xs px-2.5 py-1 rounded-lg border transition-colors ${active
+                ? 'bg-indigo-600/30 border-indigo-500/60 text-indigo-300'
+                : 'border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300'}"
+            >${labels[s] || s}</button>`
+          }).join('')}
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          ${[
+            ['positive', 'bg-green-500/20 border-green-500/50 text-green-400'],
+            ['neutral',  'bg-slate-700/60 border-slate-600 text-slate-300'],
+            ['negative', 'bg-red-500/20 border-red-500/50 text-red-400'],
+          ].map(([s, activeCls]) => {
+            const isActive = state.mentionFilter.sentiment === s
+            return `<button onclick="setMentionFilter('sentiment','${s}')"
+              class="text-xs px-2.5 py-1 rounded-lg border transition-colors ${isActive
+                ? activeCls
+                : 'border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300'}"
+            >${s}</button>`
+          }).join('')}
+        </div>
+        ${(state.mentionFilter.source || state.mentionFilter.sentiment) ? `
+          <button onclick="clearMentionFilters()"
+            class="text-xs text-slate-600 hover:text-slate-400 transition-colors ml-1">
+            × clear
+          </button>` : ''}
       </div>
 
       <!-- Mentions feed -->
@@ -1918,6 +2124,130 @@ async function handleResetSubmit(evt, token) {
   }
 }
 
+// ─── Mention Filters ───────────────────────────────────────────────────────────
+function setMentionFilter(key, val) {
+  if (state.mentionFilter[key] === val) {
+    state.mentionFilter[key] = null  // toggle off on second click
+  } else {
+    state.mentionFilter[key] = val
+  }
+  state.mentionsOffset = 0
+  // Re-render the topic page to update filter button states + fetch
+  if (state.currentTopicId) {
+    renderTopicPage(state.currentTopicId)
+  }
+}
+
+function clearMentionFilters() {
+  state.mentionFilter = { source: null, sentiment: null }
+  state.mentionsOffset = 0
+  if (state.currentTopicId) renderTopicPage(state.currentTopicId)
+}
+
+// ─── System Status Modal ───────────────────────────────────────────────────────
+async function showStatusModal() {
+  const existing = document.getElementById('status-modal')
+  if (existing) { existing.remove(); return }
+
+  const modal = document.createElement('div')
+  modal.id = 'status-modal'
+  modal.className = 'fixed inset-0 z-50 flex items-start justify-center pt-16 px-4 bg-black/60 backdrop-blur-sm'
+  modal.setAttribute('role', 'dialog')
+  modal.setAttribute('aria-modal', 'true')
+  modal.innerHTML = `
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl fade-in">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-sm font-semibold text-white">System health — last 24 h</h2>
+        <button onclick="closeStatusModal()" aria-label="Close"
+          class="text-slate-500 hover:text-white transition-colors">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div id="status-content" class="space-y-3">
+        <div class="flex items-center justify-center py-6">
+          <svg class="w-5 h-5 animate-spin text-slate-600" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  `
+  modal.addEventListener('click', e => { if (e.target === modal) closeStatusModal() })
+  document.body.appendChild(modal)
+
+  try {
+    const data = await api('/mentions/source-activity')
+    const content = document.getElementById('status-content')
+    if (!content) return
+
+    const sources = [
+      { key: 'hackernews',  label: 'Hacker News',  color: 'bg-orange-500' },
+      { key: 'reddit',      label: 'Reddit',        color: 'bg-red-500'    },
+      { key: 'google_news', label: 'Google News',   color: 'bg-sky-500'    },
+      { key: 'devto',       label: 'Dev.to',        color: 'bg-violet-500' },
+    ]
+    const maxVal = Math.max(...sources.map(s => data[s.key] || 0), 1)
+
+    content.innerHTML = `
+      <div class="space-y-3">
+        ${sources.map(s => {
+          const count = data[s.key] || 0
+          const pct   = Math.round((count / maxVal) * 100)
+          const status = count > 0
+            ? `<span class="text-xs text-green-400 font-medium">${count} mentions</span>`
+            : `<span class="text-xs text-slate-600">no data</span>`
+          return `
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs text-slate-300 font-medium">${s.label}</span>
+                ${status}
+              </div>
+              <div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                <div class="${s.color} h-full rounded-full transition-all" style="width:${pct}%"></div>
+              </div>
+            </div>`
+        }).join('')}
+      </div>
+      <p class="text-xs text-slate-600 mt-4 text-center">Ingestion runs every 2 minutes per active topic</p>
+    `
+  } catch (e) {
+    const content = document.getElementById('status-content')
+    if (content) content.innerHTML = `<p class="text-xs text-red-400 text-center py-4">${escHtml(e.message)}</p>`
+  }
+}
+
+function closeStatusModal() {
+  const modal = document.getElementById('status-modal')
+  if (modal) modal.remove()
+}
+
+// ─── Keyboard Shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  // Ignore when typing in an input/textarea
+  const tag = document.activeElement?.tagName?.toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+
+  if (e.key === 'Escape') {
+    closeDeleteModal()
+    closeStatusModal()
+    const pwModal = document.getElementById('pw-modal')
+    if (pwModal) pwModal.remove()
+    return
+  }
+
+  // N — open new topic panel (only on dashboard)
+  if (e.key === 'n' || e.key === 'N') {
+    const panel = document.getElementById('create-panel')
+    if (!panel) return
+    if (panel.classList.contains('hidden')) {
+      toggleCreatePanel()
+    }
+  }
+})
+
 // ─── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   // Handle password-reset links: /?reset_token=xxx
@@ -1931,6 +2261,27 @@ async function init() {
     renderLandingPage()
     return
   }
+
+  // Show skeleton dashboard immediately while auth data loads
+  document.getElementById('app').innerHTML = `
+    <header class="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-md border-b border-slate-800">
+      <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          ${_psLogo}
+          <span class="font-bold text-sm text-white tracking-tight">PulseStream</span>
+        </div>
+        <div class="skeleton h-4 w-20 rounded"></div>
+      </div>
+    </header>
+    <main class="max-w-5xl mx-auto px-4 py-8">
+      <div class="flex items-center justify-between mb-6">
+        <div class="skeleton h-5 w-32 rounded"></div>
+        <div class="skeleton h-8 w-28 rounded-lg"></div>
+      </div>
+      ${renderSkeletonTopicsGrid()}
+    </main>
+  `
+
   try {
     await Promise.all([loadUser(), fetchTopics(), fetchStats()])
     if (!state.token) return  // 401 inside api() already called logout()

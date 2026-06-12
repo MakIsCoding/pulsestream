@@ -27,6 +27,18 @@
     ::-webkit-scrollbar-track { background: #0f172a; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
 
+    /* Skeleton loader */
+    .skeleton {
+      background: linear-gradient(90deg, #1e293b 25%, #263348 50%, #1e293b 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.6s infinite;
+      border-radius: 6px;
+    }
+    @keyframes shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
     /* Landing page */
     html { scroll-behavior: smooth; }
     .gradient-text {
@@ -70,6 +82,6 @@
   <div id="app"></div>
   <div id="toasts" class="fixed bottom-4 right-4 flex flex-col gap-2 z-50 pointer-events-none"></div>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="/app.js?v=20260612b"></script>
+  <script src="/app.js?v=20260612c"></script>
 </body>
 </html>
