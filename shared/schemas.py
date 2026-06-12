@@ -34,6 +34,21 @@ class UserLogin(BaseModel):
     password: str
 
 
+class PasswordChange(BaseModel):
+    """Payload to change the current user's password."""
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class UserRead(BaseModel):
     """User returned to API clients. NEVER includes password_hash."""
     model_config = ConfigDict(from_attributes=True)

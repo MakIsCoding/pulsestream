@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     reddit_client_secret: str = Field("", alias="REDDIT_CLIENT_SECRET")
     reddit_user_agent: str = Field("pulsestream/0.1", alias="REDDIT_USER_AGENT")
 
+    # === Email (Resend) ===
+    resend_api_key: str = Field("", alias="RESEND_API_KEY")
+
     # === Scheduler ===
     ingestion_interval_seconds: int = Field(60, alias="INGESTION_INTERVAL_SECONDS")
     mention_retention_days: int = Field(30, alias="MENTION_RETENTION_DAYS")

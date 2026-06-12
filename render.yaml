@@ -43,6 +43,8 @@ services:
         value: HS256
       - key: JWT_EXPIRY_HOURS
         value: "720"
+      - key: RESEND_API_KEY
+        sync: false
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
