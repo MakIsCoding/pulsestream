@@ -292,6 +292,9 @@ function disconnectWs() {
 }
 
 function handleLiveMention(mention) {
+  // The backend delivers at-least-once, so the same mention can be pushed more
+  // than once (e.g. a batch re-processed after a redeploy). Show each id once.
+  if (state.mentions.some(m => m.id === mention.mention_id)) return
   if (state.currentTopicId === mention.topic_id) {
     state.mentions.unshift({
       id: mention.mention_id,

@@ -27,6 +27,10 @@ Delivery (at-least-once):
 - Messages that can never be stored (malformed JSON, missing fields, or rows
   the database rejects outright) go to the dead-letter topic instead of
   crashing the loop or being retried forever.
+- Transient failures (database or Kafka briefly unreachable) are retried in
+  place first, so a short blip doesn't cost another LLM call.
+- LLM output is validated and coerced before it's stored (`_clean_analysis`),
+  so a malformed reply is saved as "not analysed" rather than failing.
 """
 
 import asyncio
@@ -40,7 +44,15 @@ from uuid import UUID
 from groq import AsyncGroq, APIStatusError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
-from sqlalchemy.exc import DataError, IntegrityError
+from aiokafka.errors import KafkaError
+from sqlalchemy.exc import (
+    DBAPIError,
+    DataError,
+    IntegrityError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as PoolTimeoutError,
+)
 from tenacity import (
     retry,
     retry_if_not_exception_type,
@@ -178,11 +190,70 @@ async def _analyze_batch(
 # Persistence
 # ----------------------------------------------------------------------
 
+SENTIMENT_LABELS = {"positive", "negative", "neutral"}
+MAX_ENTITIES = 10
+MAX_ENTITY_CHARS = 100
+MAX_SUMMARY_CHARS = 1000
+
+
+def _clean_analysis(analysis: Any) -> dict[str, Any] | None:
+    """
+    Never trust LLM output: keep only well-formed fields, coerce types, and
+    drop anything else, so a malformed reply can't make the database insert
+    fail. Returns None when nothing usable is left (stored as "not analysed").
+    """
+    if not isinstance(analysis, dict):
+        return None
+
+    score = analysis.get("sentiment_score")
+    try:
+        score = float(score)
+        score = None if score != score else max(-1.0, min(1.0, score))  # NaN check, clamp
+    except (TypeError, ValueError):
+        score = None
+
+    label = analysis.get("sentiment_label")
+    label = label.strip().lower() if isinstance(label, str) else None
+    if label not in SENTIMENT_LABELS:
+        label = None
+
+    raw_entities = analysis.get("entities")
+    entities: list[str] | None = None
+    if isinstance(raw_entities, list):
+        seen: set[str] = set()
+        entities = []
+        for item in raw_entities:
+            if isinstance(item, str):
+                name = item.strip()[:MAX_ENTITY_CHARS]
+                if name and name.lower() not in seen:
+                    seen.add(name.lower())
+                    entities.append(name)
+            if len(entities) >= MAX_ENTITIES:
+                break
+
+    summary = analysis.get("summary")
+    if isinstance(summary, str):
+        summary = summary.strip()[:MAX_SUMMARY_CHARS] or None
+    else:
+        summary = None
+
+    cleaned = {
+        "sentiment_score": score,
+        "sentiment_label": label,
+        "entities": entities,
+        "summary": summary,
+    }
+    if all(value is None for value in cleaned.values()):
+        return None
+    return cleaned
+
+
 async def _persist_and_emit(
     raw_event: dict[str, Any],
     analysis: dict[str, Any] | None,
 ) -> None:
     """Insert/upsert the mention into Postgres and publish mentions.analyzed."""
+    analysis = _clean_analysis(analysis)
     sentiment_score = None
     sentiment_label = None
     entities = None
@@ -294,17 +365,55 @@ def _validate_event(event: Any) -> str | None:
     return None
 
 
+# Errors that mean "a dependency is unreachable right now", so the same work
+# will succeed later. Everything else is treated as permanent for that mention.
+TRANSIENT_ERRORS = (OSError, OperationalError, InterfaceError, PoolTimeoutError, KafkaError)
+
+# Before giving up on a batch, retry a transient failure in place, so a short
+# database blip doesn't cost another Groq call (1 + 2 + 4 + 8 = 15 s of waiting).
+PERSIST_ATTEMPTS = 5
+PERSIST_BACKOFF_SECONDS = 1.0
+
+
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, TRANSIENT_ERRORS):
+        return True
+    return isinstance(exc, DBAPIError) and bool(exc.connection_invalidated)
+
+
+async def _persist_with_retry(raw_event: dict[str, Any], analysis: Any) -> None:
+    """Store one mention, retrying transient failures with exponential backoff."""
+    delay = PERSIST_BACKOFF_SECONDS
+    for attempt in range(1, PERSIST_ATTEMPTS + 1):
+        try:
+            await _persist_and_emit(raw_event, analysis)
+            return
+        except Exception as exc:
+            if not _is_transient(exc) or attempt == PERSIST_ATTEMPTS:
+                raise
+            logger.warning(
+                "Transient error storing %s/%s (attempt %d/%d): %s; retrying in %.0fs",
+                raw_event.get("source"), raw_event.get("external_id"),
+                attempt, PERSIST_ATTEMPTS, exc.__class__.__name__, delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+
+
 async def _process_batch(batch: list[tuple[Any, dict[str, Any]]]) -> None:
     """
     Analyze a batch in one Groq call, then persist and emit each result.
 
     `batch` holds (Kafka message, decoded event) pairs; the message is kept so
-    a mention the database rejects can be sent to the dead-letter topic.
+    a mention that can't be stored can be sent to the dead-letter topic.
 
-    A mention the database rejects outright (IntegrityError/DataError, e.g.
-    its topic was deleted) is dead-lettered and skipped. Any other failure
-    (database or Kafka unreachable) is raised on purpose: the caller then
-    does NOT commit, and the whole batch is re-delivered after a restart.
+    Per mention:
+    - Transient failure (database or Kafka unreachable): retried in place;
+      if it still fails, it's raised on purpose, so the caller does NOT
+      commit and the whole batch is re-delivered after the worker restarts.
+    - Any other failure (the database rejects the row, unexpected data, or a
+      bug): the mention is dead-lettered and the batch carries on, so one
+      bad row can never stall the pipeline.
     """
     if not batch:
         return
@@ -320,14 +429,24 @@ async def _process_batch(batch: list[tuple[Any, dict[str, Any]]]) -> None:
     stored = 0
     for (msg, raw_event), analysis in zip(batch, analyses):
         try:
-            await _persist_and_emit(raw_event, analysis)
+            await _persist_with_retry(raw_event, analysis)
             stored += 1
-        except (IntegrityError, DataError) as exc:
-            logger.warning(
-                "Database rejected mention %s/%s permanently: %s",
-                raw_event.get("source"), raw_event.get("external_id"), exc.__class__.__name__,
+        except Exception as exc:
+            if _is_transient(exc):
+                raise
+            if isinstance(exc, (IntegrityError, DataError)):
+                logger.warning(
+                    "Database rejected mention %s/%s: %s",
+                    raw_event.get("source"), raw_event.get("external_id"), exc.__class__.__name__,
+                )
+            else:
+                logger.exception(
+                    "Unexpected error storing mention %s/%s",
+                    raw_event.get("source"), raw_event.get("external_id"),
+                )
+            await send_to_dead_letter(
+                msg, f"could not store mention: {exc.__class__.__name__}: {str(exc)[:300]}"
             )
-            await send_to_dead_letter(msg, f"database rejected row: {exc.__class__.__name__}")
 
     analyzed = sum(1 for a in analyses if a is not None)
     logger.info("Batch done: %d/%d analyzed, %d stored", analyzed, len(events), stored)

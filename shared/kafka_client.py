@@ -34,6 +34,7 @@ Usage (consumer):
             print(msg.value)
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -49,6 +50,9 @@ from shared.config import settings
 
 
 logger = logging.getLogger("pulsestream.kafka")
+
+# Longest a consumer waits to park a bad message before logging it and moving on.
+DEAD_LETTER_TIMEOUT_SECONDS = 10.0
 
 _producer: Optional[AIOKafkaProducer] = None
 
@@ -217,7 +221,12 @@ async def send_to_dead_letter(msg: Any, reason: str) -> bool:
         "failed_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        await publish_event(settings.kafka_topic_dlq, record, key=msg.topic)
+        # Bounded wait: if the dead-letter topic is missing, the producer would
+        # otherwise wait up to its 40 s request timeout and stall the consumer.
+        await asyncio.wait_for(
+            publish_event(settings.kafka_topic_dlq, record, key=msg.topic),
+            timeout=DEAD_LETTER_TIMEOUT_SECONDS,
+        )
     except Exception:
         logger.exception(
             "Could not write to dead-letter topic %r; dropping message: %s",

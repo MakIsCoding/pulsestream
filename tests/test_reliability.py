@@ -38,8 +38,10 @@ def analyzer_env(monkeypatch):
     log: list = []
     analyzer._stop_event.clear()
     monkeypatch.setattr(analyzer, "BATCH_FLUSH_SECONDS", 0.05)
+    monkeypatch.setattr(analyzer, "PERSIST_BACKOFF_SECONDS", 0.0)
 
     async def fake_analyze(events):
+        log.append(("groq", len(events)))
         return [None] * len(events)
 
     async def fake_persist(raw_event, analysis):
@@ -74,19 +76,68 @@ def test_analyzer_uses_manual_commit(analyzer_env):
 def test_analyzer_commits_only_after_whole_batch_is_stored(analyzer_env):
     log, run, _ = analyzer_env
     run([mention(i) for i in range(5)])
-    assert log == [("persist", f"post{i}") for i in range(5)] + [("commit", 5)]
+    assert log == [("groq", 5)] + [("persist", f"post{i}") for i in range(5)] + [("commit", 5)]
 
 
-def test_analyzer_commits_nothing_when_database_is_down(analyzer_env):
+def test_analyzer_commits_nothing_when_database_stays_down(analyzer_env):
     log, run, monkeypatch = analyzer_env
+    attempts = {"n": 0}
 
     async def db_down(raw_event, analysis):
+        attempts["n"] += 1
         raise ConnectionError("postgres unreachable")
 
     monkeypatch.setattr(analyzer, "_persist_and_emit", db_down)
     with pytest.raises(ConnectionError):
         run([mention(i) for i in range(3)])
-    assert not [entry for entry in log if entry[0] == "commit"], "a failed batch must not be committed"
+    assert attempts["n"] == analyzer.PERSIST_ATTEMPTS, "retried in place before giving up"
+    assert not [entry for entry in log if entry[0] in ("commit", "dlq")], (
+        "an outage must not commit or dead-letter anything; the batch is re-delivered"
+    )
+
+
+def test_short_database_blip_is_retried_without_calling_groq_again(analyzer_env):
+    log, run, monkeypatch = analyzer_env
+    failures = {"left": 2}
+
+    async def flaky(raw_event, analysis):
+        if failures["left"]:
+            failures["left"] -= 1
+            raise ConnectionError("postgres blip")
+        log.append(("persist", raw_event["external_id"]))
+
+    monkeypatch.setattr(analyzer, "_persist_and_emit", flaky)
+    run([mention(0)])
+    assert log == [("groq", 1), ("persist", "post0"), ("commit", 1)]
+
+
+def test_unexpected_error_is_dead_lettered_and_never_stalls_the_batch(analyzer_env):
+    """Before the reliability change this row was logged and skipped; now it's parked, never retried forever."""
+    log, run, monkeypatch = analyzer_env
+
+    async def persist(raw_event, analysis):
+        if raw_event["external_id"] == "post1":
+            raise TypeError("unexpected shape")
+        log.append(("persist", raw_event["external_id"]))
+
+    monkeypatch.setattr(analyzer, "_persist_and_emit", persist)
+    run([mention(0), mention(1), mention(2)])
+    assert log == [("groq", 3), ("persist", "post0"), ("dlq", 1), ("persist", "post2"), ("commit", 3)]
+
+
+def test_llm_output_is_cleaned_before_storing():
+    clean = analyzer._clean_analysis
+    assert clean(None) is None
+    assert clean("not a dict") is None
+    assert clean({}) is None
+    assert clean({"sentiment_score": "0.5", "sentiment_label": " Positive "}) == {
+        "sentiment_score": 0.5, "sentiment_label": "positive", "entities": None, "summary": None,
+    }
+    assert clean({"sentiment_score": 7})["sentiment_score"] == 1.0  # clamped to [-1, 1]
+    assert clean({"sentiment_score": "high", "sentiment_label": "very happy"}) is None
+    cleaned = clean({"entities": ["Rust", "rust", 42, " Mozilla ", ""] + [f"e{i}" for i in range(20)]})
+    assert cleaned["entities"][:2] == ["Rust", "Mozilla"] and len(cleaned["entities"]) == 10
+    assert len(clean({"summary": "x" * 5000})["summary"]) == analyzer.MAX_SUMMARY_CHARS
 
 
 # ── Analyzer: dead-letter topic ───────────────────────────────────────────
@@ -96,7 +147,7 @@ def test_malformed_message_goes_to_dlq_and_loop_continues(analyzer_env):
     run([b"{not json", mention(1)])
     # Bad message parked and committed past straight away (nothing was pending),
     # then the good one is stored and committed.
-    assert log == [("dlq", 0), ("commit", 1), ("persist", "post1"), ("commit", 2)]
+    assert log == [("dlq", 0), ("commit", 1), ("groq", 1), ("persist", "post1"), ("commit", 2)]
 
 
 def test_message_missing_fields_goes_to_dlq(analyzer_env):
@@ -115,7 +166,7 @@ def test_row_rejected_by_database_goes_to_dlq_and_batch_still_commits(analyzer_e
 
     monkeypatch.setattr(analyzer, "_persist_and_emit", persist)
     run([mention(0), mention(1), mention(2)])
-    assert log == [("persist", "post0"), ("dlq", 1), ("persist", "post2"), ("commit", 3)]
+    assert log == [("groq", 3), ("persist", "post0"), ("dlq", 1), ("persist", "post2"), ("commit", 3)]
 
 
 # ── Ingester ──────────────────────────────────────────────────────────────
@@ -200,6 +251,18 @@ def test_dead_letter_failure_is_reported_not_raised(monkeypatch):
         raise RuntimeError("UnknownTopicOrPartition")
 
     monkeypatch.setattr(kc, "publish_event", topic_missing)
+    msg = make_msgs("mentions.raw", [b"x"])[0]
+    assert asyncio.run(kc.send_to_dead_letter(msg, "bad")) is False
+
+
+def test_dead_letter_send_gives_up_quickly_if_topic_is_missing(monkeypatch):
+    import shared.kafka_client as kc
+
+    async def hangs(topic, event, key=None):
+        await asyncio.sleep(3600)  # producer waiting for metadata of a missing topic
+
+    monkeypatch.setattr(kc, "publish_event", hangs)
+    monkeypatch.setattr(kc, "DEAD_LETTER_TIMEOUT_SECONDS", 0.05)
     msg = make_msgs("mentions.raw", [b"x"])[0]
     assert asyncio.run(kc.send_to_dead_letter(msg, "bad")) is False
 
