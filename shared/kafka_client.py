@@ -12,6 +12,12 @@ Topics we use:
 - pulsestream.dlq: dead-letter topic for messages that can never be processed
 
 Delivery guarantees:
+- The producer is idempotent (`enable_idempotence=True`, which requires
+  acks="all"). The broker gives it a producer id and a sequence number per
+  message, and drops a message it has already written, so a retry after a
+  lost acknowledgement can't write a duplicate. It does NOT stop duplicates
+  from a consumer re-processing a message and publishing it again (that's a
+  new send); the consumers' idempotent writes handle those.
 - The pipeline consumers (scheduler, ingester, analyzer) run with auto-commit
   OFF and call `commit_offsets()` only after a message's work is done. A crash
   or redeploy therefore re-delivers unfinished messages instead of skipping
@@ -82,6 +88,54 @@ def _kafka_security_kwargs() -> dict:
     }
 
 
+# Idempotent producer: no duplicates from the producer's own retries.
+# aiokafka requires acks="all" with it (acks=1 alongside it raises an error).
+# acks="all" waits for every in-sync replica. On Aiven's free tier there is one
+# broker and one replica, so that's the same single broker acks=1 waited for:
+# it adds no durability there, only on a cluster with replicas.
+PRODUCER_SETTINGS = {
+    "enable_idempotence": True,
+    "acks": "all",
+    "linger_ms": 5,
+    "compression_type": "gzip",
+}
+
+
+class PublishHealth:
+    """Outcome of recent publishes, reported on /healthz."""
+
+    def __init__(self) -> None:
+        self.last_ok_at: datetime | None = None
+        self.last_failure_at: datetime | None = None
+        self.last_error: str | None = None
+        self.consecutive_failures = 0
+
+    def record_success(self) -> None:
+        self.last_ok_at = datetime.now(timezone.utc)
+        self.consecutive_failures = 0
+
+    def record_failure(self, exc: BaseException) -> None:
+        self.last_failure_at = datetime.now(timezone.utc)
+        self.last_error = exc.__class__.__name__
+        self.consecutive_failures += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        def iso(value: datetime | None) -> str | None:
+            return value.isoformat() if value else None
+
+        return {
+            "idempotent_producer": PRODUCER_SETTINGS["enable_idempotence"],
+            "acks": PRODUCER_SETTINGS["acks"],
+            "last_publish_ok_at": iso(self.last_ok_at),
+            "last_publish_failure_at": iso(self.last_failure_at),
+            "last_error": self.last_error,
+            "consecutive_failures": self.consecutive_failures,
+        }
+
+
+publish_health = PublishHealth()
+
+
 async def get_producer() -> AIOKafkaProducer:
     """
     Returns the shared async Kafka producer.
@@ -93,9 +147,7 @@ async def get_producer() -> AIOKafkaProducer:
     if _producer is None:
         _producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
-            acks=1,
-            linger_ms=5,
-            compression_type="gzip",
+            **PRODUCER_SETTINGS,
             **_kafka_security_kwargs(),
         )
         await _producer.start()
@@ -119,10 +171,15 @@ async def publish_event(topic: str, event: dict, key: Optional[str] = None) -> N
     for the same `topic_id` should use the topic_id as the Kafka key so
     they're processed in order.
     """
-    producer = await get_producer()
     payload = json.dumps(event).encode("utf-8")
     key_bytes = key.encode("utf-8") if key else None
-    await producer.send_and_wait(topic, value=payload, key=key_bytes)
+    try:
+        producer = await get_producer()
+        await producer.send_and_wait(topic, value=payload, key=key_bytes)
+    except Exception as exc:
+        publish_health.record_failure(exc)
+        raise
+    publish_health.record_success()
 
 
 @asynccontextmanager

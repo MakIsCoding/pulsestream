@@ -354,3 +354,59 @@ def test_scheduler_timer_keeps_running_when_topic_consumer_crashes(monkeypatch):
         assert not sched._aps.running, "timer stops only when the app shuts down"
 
     asyncio.run(main())
+
+
+# ── Producer ──────────────────────────────────────────────────────────────
+
+def test_producer_is_idempotent_and_aiokafka_accepts_the_settings(monkeypatch):
+    import aiokafka
+    import shared.kafka_client as kc
+
+    created = {}
+
+    class FakeProducer:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr(kc, "_producer", None)
+    monkeypatch.setattr(kc, "AIOKafkaProducer", FakeProducer)
+    asyncio.run(kc.get_producer())
+    assert created["enable_idempotence"] is True and created["acks"] == "all"
+
+    async def build_real_one():
+        # aiokafka raises ValueError if idempotence is combined with acks=1.
+        producer = aiokafka.AIOKafkaProducer(bootstrap_servers="localhost:1", **kc.PRODUCER_SETTINGS)
+        return producer._txn_manager is not None  # set only for idempotent producers
+
+    assert asyncio.run(build_real_one())
+
+
+def test_publish_health_shows_failures_and_recovery(monkeypatch):
+    import shared.kafka_client as kc
+    from aiokafka.errors import KafkaConnectionError
+
+    outcomes = [KafkaConnectionError(), None]
+
+    class FlakyProducer:
+        async def send_and_wait(self, topic, value=None, key=None):
+            outcome = outcomes.pop(0)
+            if outcome:
+                raise outcome
+
+    async def fake_get_producer():
+        return FlakyProducer()
+
+    monkeypatch.setattr(kc, "publish_health", kc.PublishHealth())
+    monkeypatch.setattr(kc, "get_producer", fake_get_producer)
+    with pytest.raises(KafkaConnectionError):
+        asyncio.run(kc.publish_event("mentions.raw", {"a": 1}))
+    assert kc.publish_health.snapshot()["consecutive_failures"] == 1
+    assert kc.publish_health.snapshot()["last_error"] == "KafkaConnectionError"
+
+    asyncio.run(kc.publish_event("mentions.raw", {"a": 1}))
+    snap = kc.publish_health.snapshot()
+    assert snap["consecutive_failures"] == 0 and snap["last_publish_ok_at"]
+    assert snap["idempotent_producer"] is True and snap["acks"] == "all"

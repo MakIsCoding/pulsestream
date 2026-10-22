@@ -31,7 +31,7 @@ from sqlalchemy import text
 
 from shared.config import settings
 from shared.db import engine, Base
-from shared.kafka_client import close_producer, get_producer
+from shared.kafka_client import close_producer, get_producer, publish_health
 from shared.llm import llm_health
 from shared.redis_client import close_redis, get_redis
 from shared.supervisor import restart_counts, supervise
@@ -200,8 +200,9 @@ async def healthz() -> JSONResponse:
 
     Also reports how many times each background worker has been restarted
     by its supervisor, so a crash loop is visible without reading logs, and
-    how LLM calls are going (model, last success, last error, consecutive
-    failures), so a model that stops answering is visible too. Neither
+    how LLM calls and Kafka publishes are going (last success, last error,
+    consecutive failures), so a model that stops answering or a producer
+    that can't publish is visible too. Neither
     changes the status: the process is alive, so Render shouldn't restart it.
 
     Used by:
@@ -213,6 +214,7 @@ async def healthz() -> JSONResponse:
         "status": "ok",
         "worker_restarts": dict(restart_counts),
         "llm": llm_health.snapshot(),
+        "kafka": publish_health.snapshot(),
     })
 
 
