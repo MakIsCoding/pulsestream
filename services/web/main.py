@@ -31,6 +31,7 @@ from shared.config import settings
 from shared.db import engine, Base
 from shared.kafka_client import close_producer, get_producer
 from shared.redis_client import close_redis, get_redis
+from shared.supervisor import restart_counts, supervise
 import shared.models  # noqa: F401 — registers all ORM classes with Base
 
 from services.web.routes import auth, config, mentions, topics
@@ -46,8 +47,9 @@ logger = logging.getLogger("pulsestream.web")
 
 # ──────────────────────────────────────────────────────────────────────
 # Background worker wrappers
-# Each wrapper runs the service's core loop and handles CancelledError
-# cleanly so the lifespan shutdown is tidy.
+# Each wrapper runs the service's core loop under `supervise`, which
+# restarts the loop with backoff if it crashes (Kafka or Postgres briefly
+# unreachable), and handles CancelledError so the lifespan shutdown is tidy.
 # ──────────────────────────────────────────────────────────────────────
 
 async def _run_scheduler() -> None:
@@ -73,9 +75,12 @@ async def _run_scheduler() -> None:
     )
     sched._aps.start()
     logger.info("Scheduler started (interval=%ds)", settings.ingestion_interval_seconds)
-    await sched._fan_out_ingestion_jobs()
     try:
-        await sched._consume_topic_events()
+        await sched._fan_out_ingestion_jobs()
+        # Only the topic-events consumer is supervised; the timer jobs keep
+        # running regardless. The timer is shut down only when the app stops,
+        # never because the consumer crashed.
+        await supervise("scheduler-topic-events", sched._consume_topic_events)
     except asyncio.CancelledError:
         pass
     finally:
@@ -87,7 +92,7 @@ async def _run_ingester() -> None:
     from services.ingester.main import _consume_jobs
     logger.info("Ingester starting...")
     try:
-        await _consume_jobs()
+        await supervise("ingester", _consume_jobs)
     except asyncio.CancelledError:
         pass
     logger.info("Ingester stopped.")
@@ -97,7 +102,7 @@ async def _run_analyzer() -> None:
     from services.analyzer.main import _consume_mentions
     logger.info("Analyzer starting...")
     try:
-        await _consume_mentions()
+        await supervise("analyzer", _consume_mentions)
     except asyncio.CancelledError:
         pass
     logger.info("Analyzer stopped.")
@@ -179,12 +184,15 @@ async def healthz() -> JSONResponse:
     """
     Liveness probe. Returns 200 if the process is up.
 
+    Also reports how many times each background worker has been restarted
+    by its supervisor, so a crash loop is visible without reading logs.
+
     Used by:
     - Docker HEALTHCHECK in the Dockerfile
     - Kubernetes liveness probes (later)
     - Load balancers
     """
-    return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "ok", "worker_restarts": dict(restart_counts)})
 
 
 # Serve the frontend SPA. Must be mounted LAST so API routes take precedence.

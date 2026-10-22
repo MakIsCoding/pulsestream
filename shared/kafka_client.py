@@ -5,9 +5,21 @@ Kafka is the event backbone for PulseStream. Services publish events to
 topics; other services subscribe and process them.
 
 Topics we use:
+- topics.created: web publishes when user creates a topic, scheduler consumes
+- ingestion.jobs: scheduler publishes one job per (topic, source), ingester consumes
 - mentions.raw: ingester publishes new items here, analyzer consumes
 - mentions.analyzed: analyzer publishes results, websocket consumes
-- topics.created: web publishes when user creates a topic, scheduler consumes
+- pulsestream.dlq: dead-letter topic for messages that can never be processed
+
+Delivery guarantees:
+- The pipeline consumers (scheduler, ingester, analyzer) run with auto-commit
+  OFF and call `commit_offsets()` only after a message's work is done. A crash
+  or redeploy therefore re-delivers unfinished messages instead of skipping
+  them (at-least-once). Every consumer is safe to repeat: the ingester dedups
+  in Redis and the analyzer's insert is ON CONFLICT DO NOTHING.
+- A message that can never be processed (malformed, or rejected by the
+  database) is parked on the dead-letter topic with `send_to_dead_letter()`
+  so it can't block or crash the consumer.
 
 Usage (producer):
     from shared.kafka_client import get_producer
@@ -24,14 +36,19 @@ Usage (consumer):
 
 import base64
 import json
+import logging
 import ssl
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka.errors import KafkaError
 
 from shared.config import settings
 
+
+logger = logging.getLogger("pulsestream.kafka")
 
 _producer: Optional[AIOKafkaProducer] = None
 
@@ -109,6 +126,7 @@ async def make_consumer(
     *topics: str,
     group_id: str,
     auto_offset_reset: str = "latest",
+    enable_auto_commit: bool = True,
 ) -> AsyncIterator[AIOKafkaConsumer]:
     """
     Async context manager for a Kafka consumer.
@@ -121,18 +139,28 @@ async def make_consumer(
     - "latest" (default): start from new messages only on first run
     - "earliest": replay from the beginning (useful for analytics)
 
+    enable_auto_commit:
+    - True (default): aiokafka commits the consumed position on a 5 s timer,
+      whether or not the work for those messages has finished. A crash can
+      therefore skip messages. Only acceptable for best-effort consumers
+      (the WebSocket push).
+    - False: nothing is committed until the caller runs `commit_offsets()`
+      after finishing the work. Used by every pipeline consumer.
+
     Usage:
-        async with make_consumer("mentions.raw", group_id="analyzer") as c:
+        async with make_consumer("mentions.raw", group_id="analyzer",
+                                 enable_auto_commit=False) as c:
             async for msg in c:
                 event = json.loads(msg.value)
-                ...
+                ...  # do the work
+                await commit_offsets(c)
     """
     consumer = AIOKafkaConsumer(
         *topics,
         bootstrap_servers=settings.kafka_bootstrap_servers,
         group_id=group_id,
         auto_offset_reset=auto_offset_reset,
-        enable_auto_commit=True,
+        enable_auto_commit=enable_auto_commit,
         auto_commit_interval_ms=5000,
         **_kafka_security_kwargs(),
     )
@@ -141,6 +169,68 @@ async def make_consumer(
         yield consumer
     finally:
         await consumer.stop()
+
+
+async def commit_offsets(consumer: AIOKafkaConsumer) -> None:
+    """
+    Commit the consumer's current position. Call it only after the work for
+    every message handed out so far is finished.
+
+    A failed commit (broker unreachable, or the group rebalanced) is logged
+    rather than raised: the uncommitted messages are simply delivered again,
+    and every consumer in this project is safe to repeat.
+    """
+    try:
+        await consumer.commit()
+    except KafkaError:
+        logger.warning(
+            "Offset commit failed; messages since the last commit will be re-delivered",
+            exc_info=True,
+        )
+
+
+async def send_to_dead_letter(msg: Any, reason: str) -> bool:
+    """
+    Park a message that can never be processed on the dead-letter topic,
+    together with where it came from and why it failed, so the consumer can
+    move on instead of crashing or retrying it forever.
+
+    Returns False if even that fails (for example, the dead-letter topic
+    hasn't been created). The caller still moves on; the full record is in
+    the error log so nothing is lost silently.
+    """
+    raw_value = msg.value
+    if isinstance(raw_value, (bytes, bytearray)):
+        value_text = raw_value.decode("utf-8", errors="replace")
+    else:
+        value_text = repr(raw_value)
+    raw_key = msg.key
+    key_text = raw_key.decode("utf-8", errors="replace") if raw_key else None
+
+    record = {
+        "source_topic": msg.topic,
+        "partition": msg.partition,
+        "offset": msg.offset,
+        "key": key_text,
+        "value": value_text,
+        "error": reason,
+        "failed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await publish_event(settings.kafka_topic_dlq, record, key=msg.topic)
+    except Exception:
+        logger.exception(
+            "Could not write to dead-letter topic %r; dropping message: %s",
+            settings.kafka_topic_dlq,
+            record,
+        )
+        return False
+
+    logger.warning(
+        "Sent %s[%s]@%s to dead-letter topic %r: %s",
+        msg.topic, msg.partition, msg.offset, settings.kafka_topic_dlq, reason,
+    )
+    return True
 
 
 def deserialize_event(raw: Any) -> dict:

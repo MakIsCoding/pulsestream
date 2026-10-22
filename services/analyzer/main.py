@@ -18,6 +18,15 @@ Idempotency:
 - Postgres has a unique constraint on (source, external_id). If the
   analyzer is replayed (Kafka offset reset), we ON CONFLICT DO NOTHING
   so duplicates fail silently rather than crashing.
+
+Delivery (at-least-once):
+- Auto-commit is OFF. Offsets are committed only after every mention in a
+  batch has been written to Postgres. If the process crashes, is redeployed,
+  or Postgres is briefly down mid-batch, nothing is committed and the batch
+  is re-delivered; the ON CONFLICT insert makes the repeat harmless.
+- Messages that can never be stored (malformed JSON, missing fields, or rows
+  the database rejects outright) go to the dead-letter topic instead of
+  crashing the loop or being retried forever.
 """
 
 import asyncio
@@ -31,6 +40,7 @@ from uuid import UUID
 from groq import AsyncGroq, APIStatusError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
+from sqlalchemy.exc import DataError, IntegrityError
 from tenacity import (
     retry,
     retry_if_not_exception_type,
@@ -42,10 +52,12 @@ from shared.config import settings
 from shared.db import AsyncSessionLocal, Base, engine
 from shared.kafka_client import (
     close_producer,
+    commit_offsets,
     deserialize_event,
     get_producer,
     make_consumer,
     publish_event,
+    send_to_dead_letter,
 )
 from shared.models import Mention, Topic
 
@@ -261,51 +273,110 @@ async def _persist_and_emit(
 # Consume loop
 # ----------------------------------------------------------------------
 
-async def _process_batch(batch: list[dict[str, Any]]) -> None:
-    """Analyze a batch in one Gemini call, then persist and emit each result."""
+REQUIRED_FIELDS = ("source", "external_id", "topic_id")
+
+
+def _validate_event(event: Any) -> str | None:
+    """
+    Return why a mentions.raw event can never be processed, or None if it's
+    usable. These are permanent problems: retrying won't fix them, so the
+    message goes to the dead-letter topic.
+    """
+    if not isinstance(event, dict):
+        return "event is not a JSON object"
+    for field in REQUIRED_FIELDS:
+        if not event.get(field):
+            return f"missing field {field!r}"
+    try:
+        UUID(str(event["topic_id"]))
+    except ValueError:
+        return "topic_id is not a valid UUID"
+    return None
+
+
+async def _process_batch(batch: list[tuple[Any, dict[str, Any]]]) -> None:
+    """
+    Analyze a batch in one Groq call, then persist and emit each result.
+
+    `batch` holds (Kafka message, decoded event) pairs; the message is kept so
+    a mention the database rejects can be sent to the dead-letter topic.
+
+    A mention the database rejects outright (IntegrityError/DataError, e.g.
+    its topic was deleted) is dead-lettered and skipped. Any other failure
+    (database or Kafka unreachable) is raised on purpose: the caller then
+    does NOT commit, and the whole batch is re-delivered after a restart.
+    """
     if not batch:
         return
 
-    logger.info("Analyzing batch of %d mention(s) via Groq (%s)...", len(batch), settings.groq_model)
+    events = [event for _, event in batch]
+    logger.info("Analyzing batch of %d mention(s) via Groq (%s)...", len(events), settings.groq_model)
     try:
-        analyses = await _analyze_batch(batch)
+        analyses = await _analyze_batch(events)
     except Exception:
-        logger.exception("Gemini analysis failed; persisting raw mentions only")
-        analyses = [None] * len(batch)
+        logger.exception("Groq analysis failed; persisting raw mentions only")
+        analyses = [None] * len(events)
 
-    for raw_event, analysis in zip(batch, analyses):
+    stored = 0
+    for (msg, raw_event), analysis in zip(batch, analyses):
         try:
             await _persist_and_emit(raw_event, analysis)
-        except Exception:
-            logger.exception(
-                "Failed to persist mention %s/%s",
-                raw_event.get("source"),
-                raw_event.get("external_id"),
+            stored += 1
+        except (IntegrityError, DataError) as exc:
+            logger.warning(
+                "Database rejected mention %s/%s permanently: %s",
+                raw_event.get("source"), raw_event.get("external_id"), exc.__class__.__name__,
             )
+            await send_to_dead_letter(msg, f"database rejected row: {exc.__class__.__name__}")
 
     analyzed = sum(1 for a in analyses if a is not None)
-    logger.info("Batch done: %d/%d analyzed, %d stored", analyzed, len(batch), len(batch))
+    logger.info("Batch done: %d/%d analyzed, %d stored", analyzed, len(events), stored)
 
 
 async def _consume_mentions() -> None:
-    """Consume mentions.raw, accumulate in batches, flush periodically."""
+    """
+    Consume mentions.raw, accumulate in batches, flush periodically.
+
+    Offsets are committed only after a batch has been fully written to
+    Postgres (at-least-once). Unprocessable messages go to the dead-letter
+    topic instead of crashing the loop.
+    """
     topic = settings.kafka_topic_mentions_raw
     logger.info("Subscribing to Kafka topic %r as group 'analyzer'", topic)
 
-    batch: list[dict[str, Any]] = []
+    batch: list[tuple[Any, dict[str, Any]]] = []
     last_flush = asyncio.get_running_loop().time()
 
-    async with make_consumer(topic, group_id="analyzer", auto_offset_reset="earliest") as consumer:
+    async with make_consumer(
+        topic,
+        group_id="analyzer",
+        auto_offset_reset="earliest",
+        enable_auto_commit=False,
+    ) as consumer:
         while not _stop_event.is_set():
             try:
                 # Wait up to BATCH_FLUSH_SECONDS for the next message.
                 msg = await asyncio.wait_for(
                     consumer.getone(), timeout=BATCH_FLUSH_SECONDS
                 )
-                event = deserialize_event(msg.value)
-                batch.append(event)
             except asyncio.TimeoutError:
-                pass  # No new message — fall through and check if we should flush.
+                msg = None  # No new message — fall through and check if we should flush.
+
+            if msg is not None:
+                try:
+                    event = deserialize_event(msg.value)
+                    problem = _validate_event(event)
+                except Exception as exc:  # undecodable bytes or invalid JSON
+                    event, problem = None, f"undecodable message: {exc}"
+
+                if problem:
+                    await send_to_dead_letter(msg, problem)
+                    if not batch:
+                        # Nothing else is pending, so it's safe to move the
+                        # committed offset past the bad message now.
+                        await commit_offsets(consumer)
+                else:
+                    batch.append((msg, event))
 
             now = asyncio.get_running_loop().time()
             full = len(batch) >= BATCH_SIZE
@@ -313,13 +384,18 @@ async def _consume_mentions() -> None:
 
             if full or stale:
                 await _process_batch(batch)
+                # Commit only now that every mention in the batch is stored.
+                await commit_offsets(consumer)
                 batch = []
                 last_flush = now
 
-        # Drain on shutdown.
+        # Graceful stop (standalone service, SIGTERM): finish and commit.
+        # If the task is cancelled instead, this is skipped and nothing is
+        # committed, so the batch is simply re-delivered on the next start.
         if batch:
             logger.info("Draining final batch of %d on shutdown...", len(batch))
             await _process_batch(batch)
+            await commit_offsets(consumer)
 
 
 async def main() -> None:

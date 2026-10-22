@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     kafka_topic_mentions_analyzed: str = Field("mentions.analyzed", alias="KAFKA_TOPIC_MENTIONS_ANALYZED")
     kafka_topic_topics_created: str = Field("topics.created", alias="KAFKA_TOPIC_TOPICS_CREATED")
     kafka_topic_ingestion_jobs: str = Field("ingestion.jobs", alias="KAFKA_TOPIC_INGESTION_JOBS")
+    kafka_topic_dlq: str = Field("pulsestream.dlq", alias="KAFKA_TOPIC_DLQ")
 
     # === Auth ===
     jwt_secret: str = Field("change-me", alias="JWT_SECRET")

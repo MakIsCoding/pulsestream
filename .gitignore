@@ -45,3 +45,5 @@ node_modules/
 data/
 *.db
 *.sqlite
+
+.pytest_cache/

@@ -37,14 +37,16 @@ from shared.config import settings
 from shared.db import AsyncSessionLocal, engine
 from shared.kafka_client import (
     close_producer,
+    commit_offsets,
     deserialize_event,
     get_producer,
     make_consumer,
     publish_event,
+    send_to_dead_letter,
 )
 from shared.redis_client import get_redis
 from shared.models import Mention, Topic, TopicDigest
-from shared.schemas import IngestionJobEvent
+from shared.schemas import IngestionJobEvent, TopicCreatedEvent
 
 
 _groq_client: AsyncGroq | None = None
@@ -188,11 +190,22 @@ class Scheduler:
         topic_name = settings.kafka_topic_topics_created
         logger.info("Subscribing to Kafka topic '%s'...", topic_name)
 
-        async with make_consumer(topic_name, group_id="scheduler") as consumer:
+        async with make_consumer(
+            topic_name, group_id="scheduler", enable_auto_commit=False
+        ) as consumer:
             async for msg in consumer:
                 if self._stop_event.is_set():
                     break
-                event = deserialize_event(msg.value)
+
+                try:
+                    event = deserialize_event(msg.value)
+                    TopicCreatedEvent.model_validate(event)  # has every field we need
+                except Exception as exc:
+                    # Can never be processed: park it instead of crashing.
+                    await send_to_dead_letter(msg, f"invalid topics.created event: {exc}")
+                    await commit_offsets(consumer)
+                    continue
+
                 logger.info(
                     "topic.created received: topic_id=%s user_id=%s name=%r",
                     event.get("topic_id"),
@@ -201,7 +214,18 @@ class Scheduler:
                 )
                 # Trigger an immediate ingestion for this topic so the user
                 # doesn't wait the full interval to see their first results.
-                await self._enqueue_for_topic(event)
+                try:
+                    await self._enqueue_for_topic(event)
+                except Exception:
+                    # Usually Kafka being briefly unreachable. Don't let it kill
+                    # this loop: the periodic fan-out reads topics from Postgres,
+                    # so this topic is still picked up on the next tick.
+                    logger.exception(
+                        "Immediate ingestion for topic %s failed; the next fan-out tick covers it",
+                        event.get("topic_id"),
+                    )
+
+                await commit_offsets(consumer)
 
     async def _enqueue_for_topic(self, topic_event: dict[str, Any]) -> None:
         """Fan out ingestion jobs for a single topic across its selected sources."""

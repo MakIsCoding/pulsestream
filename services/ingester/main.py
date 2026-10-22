@@ -11,7 +11,13 @@ This prevents the analyzer from doing redundant LLM calls and keeps
 free-tier API budgets in check.
 
 Multiple ingester replicas can run safely — they share the Kafka
-consumer group `ingester` so each job is processed exactly once.
+consumer group `ingester`, so each job goes to one replica.
+
+Offsets are committed manually after each job is handled. A job that fails
+(a source API or Redis hiccup) is logged and skipped rather than retried in
+place: the scheduler re-issues every active topic's jobs on its next tick, so
+it's retried within one interval without blocking the jobs behind it.
+A job that can't even be decoded goes to the dead-letter topic.
 """
 
 import asyncio
@@ -23,10 +29,12 @@ from shared.config import settings
 from shared.db import engine
 from shared.kafka_client import (
     close_producer,
+    commit_offsets,
     deserialize_event,
     get_producer,
     make_consumer,
     publish_event,
+    send_to_dead_letter,
 )
 from shared.redis_client import close_redis, get_redis
 
@@ -86,18 +94,30 @@ async def _consume_jobs() -> None:
     topic = settings.kafka_topic_ingestion_jobs
     logger.info("Subscribing to Kafka topic %r as group 'ingester'", topic)
 
-    async with make_consumer(topic, group_id="ingester") as consumer:
+    async with make_consumer(topic, group_id="ingester", enable_auto_commit=False) as consumer:
         async for msg in consumer:
             if _stop_event.is_set():
+                # Not handled, so not committed: it's re-delivered on restart.
                 break
 
             try:
                 job = deserialize_event(msg.value)
+                if not isinstance(job, dict):
+                    raise ValueError("job is not a JSON object")
+            except Exception as exc:
+                # Can never be processed: park it instead of retrying.
+                await send_to_dead_letter(msg, f"undecodable ingestion job: {exc}")
+                await commit_offsets(consumer)
+                continue
+
+            try:
                 await _handle_job(job)
             except Exception:
-                # One bad job must not kill the consumer.
-                # In a future iteration we'd push the failed job to a DLQ.
+                # One bad job must not kill the consumer. The scheduler re-issues
+                # this topic's jobs on its next tick, so it's retried then.
                 logger.exception("Failed to process ingestion job; moving on")
+
+            await commit_offsets(consumer)
 
 
 async def _handle_job(job: dict[str, Any]) -> None:

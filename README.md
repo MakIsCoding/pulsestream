@@ -36,7 +36,7 @@ Browser
 │  │                                                          │ │
 │  │  Ingester   ◄── Kafka: ingestion.jobs                    │ │
 │  │             ├── Google News RSS (any topic)              │ │
-│  │             ├── Reddit JSON API                          │ │
+│  │             ├── Reddit search RSS                        │ │
 │  │             ├── HackerNews Algolia API (tech)            │ │
 │  │             ├── Dev.to Forem API (tech)                  │ │
 │  │             └──► Kafka: mentions.raw                     │ │
@@ -90,6 +90,18 @@ User creates topic
                     ▼
               WebSocket consumer pushes to browser
 ```
+
+---
+
+## Reliability
+
+How the pipeline behaves when something fails part-way:
+
+- **At-least-once delivery.** The scheduler, ingester and analyzer consumers run with Kafka auto-commit **off**. Each commits its offset only after the work for a message is done; the analyzer commits only after a whole batch is written to Postgres. A crash, a redeploy, or Postgres being briefly down therefore re-delivers unfinished messages instead of skipping them.
+- **Idempotent processing, so repeats are harmless.** Mentions have a unique key `(source, external_id)` and are inserted with `ON CONFLICT DO NOTHING`, so a re-delivered message can't create a duplicate row. The ingester also keeps a 7-day Redis "seen" key per post, so already-seen posts aren't re-published or re-analysed. Together: effectively exactly-once for stored results.
+- **Dead-letter topic.** A message that can never be processed (malformed JSON, missing fields, or a row the database rejects outright) is parked on `pulsestream.dlq` with its origin topic, partition, offset and the reason, instead of crashing the consumer or being retried forever.
+- **Supervised workers.** Each background worker runs under a supervisor that restarts it with exponential backoff if its loop crashes (for example, Kafka unreachable). The scheduler's 2-minute timer keeps running even if its topic consumer restarts. `/healthz` reports each worker's restart count.
+- **Tests.** `tests/test_reliability.py` drives the consumer loops with fake Kafka consumers and checks commit timing, dead-lettering and restarts (see "Run the tests" below).
 
 ---
 
@@ -168,6 +180,15 @@ All five services run independently in docker-compose (useful for local debuggin
 | `pulsestream-scheduler` | — | Periodic ingestion jobs |
 | `pulsestream-ingester` | — | Multi-source fetcher (Google News, Reddit, HN, Dev.to) |
 | `pulsestream-analyzer` | — | Groq enrichment |
+
+### Run the tests
+
+The tests need no Kafka, Postgres or Redis. Use Python 3.12, the same version as the Dockerfiles.
+
+```bash
+pip install -r shared/requirements.txt -r services/web/requirements.txt pytest
+pytest -q
+```
 
 ---
 
