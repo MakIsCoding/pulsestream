@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     # === AI (Groq — primary) ===
     llm_provider: str = Field("groq", alias="LLM_PROVIDER")
     groq_api_key: str = Field("", alias="GROQ_API_KEY")
-    groq_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
+    # openai/gpt-oss-20b replaced llama-3.1-8b-instant, which Groq shut down on
+    # 2026-08-16. See shared/llm.py for how a retired model name is handled.
+    groq_model: str = Field("openai/gpt-oss-20b", alias="GROQ_MODEL")
 
     # === Reddit (optional) ===
     reddit_client_id: str = Field("", alias="REDDIT_CLIENT_ID")

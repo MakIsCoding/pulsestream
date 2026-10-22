@@ -46,6 +46,11 @@ Browser
 │  │             ├── Groq API  (sentiment · entities · summary)│ │
 │  │             ├── Neon PostgreSQL  (persist mention row)   │ │
 │  │             └──► Kafka: mentions.analyzed                │ │
+│  │             model: openai/gpt-oss-20b (low reasoning)    │ │
+│  │                                                          │ │
+│  │  Re-analyzer ── every 3 min: posts saved without         │ │
+│  │              sentiment → Groq → Postgres (5 at a time)   │ │
+│  │              └──► Kafka: mentions.analyzed               │ │
 │  │                                                          │ │
 │  │  WS Consumer◄── Kafka: mentions.analyzed                 │ │
 │  │             └──► WebSocket push to matching user         │ │
@@ -104,7 +109,9 @@ How the pipeline behaves when something fails part-way:
 - **LLM output is validated.** The analyzer coerces and bounds what the model returns (score clamped to [-1, 1], label limited to positive/negative/neutral, entity list deduped and capped) before storing it, so a malformed reply is saved as "not analysed" instead of failing.
 - **No duplicate live cards.** Because delivery is at-least-once, the browser ignores a pushed mention whose id it's already showing.
 - **Supervised workers.** Each background worker runs under a supervisor that restarts it with exponential backoff if its loop crashes (for example, Kafka unreachable). The scheduler's 2-minute timer keeps running even if its topic consumer restarts. `/healthz` reports each worker's restart count.
-- **Tests.** `tests/test_reliability.py` drives the consumer loops with fake Kafka consumers and checks commit timing, dead-lettering and restarts (see "Run the tests" below).
+- **Failed analyses are retried later.** If the LLM call fails (rate limit, outage, or a retired model), the mention is still stored, without sentiment. A re-analysis loop picks up those mentions from the last 7 days, newest first, 5 every 3 minutes, writes the result only onto rows that still have no analysis, and pushes it so an open dashboard updates the card in place. If Groq itself is failing, the loop backs off (up to 30 minutes); a post Groq answers for but can't analyse is skipped after 3 attempts.
+- **LLM health is visible.** `/healthz` also reports the model in use, the last successful call, the last error (type, HTTP status and Groq's error code) and the number of consecutive failures. This was added after Groq retired the original model and analysis failed silently for weeks: posts kept arriving, nothing crashed, they just had no sentiment.
+- **Tests.** `tests/test_reliability.py` drives the consumer loops with fake Kafka consumers and checks commit timing, dead-lettering and restarts. `tests/test_llm.py` checks the model settings, LLM health reporting and the re-analysis loop (see "Run the tests" below).
 
 ---
 
@@ -116,7 +123,7 @@ How the pipeline behaves when something fails part-way:
 | Event streaming | Apache Kafka (Aiven free tier) |
 | Database | PostgreSQL (Neon serverless) |
 | Cache / dedup | Redis (Upstash free tier) |
-| AI analysis | Groq API — Llama 3.1 8B Instant |
+| AI analysis | Groq API — `openai/gpt-oss-20b` (reasoning model, low reasoning effort) |
 | Frontend | Vanilla JS SPA, Chart.js, Tailwind CSS |
 | Deployment | Render free tier (Docker, single service) |
 
@@ -193,6 +200,12 @@ pip install -r shared/requirements.txt -r services/web/requirements.txt pytest
 pytest -q
 ```
 
+`tests/test_reanalysis_db.py` checks the re-analysis queries against a real Postgres. It's skipped unless `TEST_DATABASE_URL` points at a throwaway database (it creates and drops the tables):
+
+```bash
+TEST_DATABASE_URL=postgresql+asyncpg://postgres@localhost:5432/ps_test pytest -q
+```
+
 ---
 
 ## Cloud deployment (Render)
@@ -223,7 +236,7 @@ The repo includes a `render.yaml` that deploys everything as a single free web s
 | `JWT_SECRET` | Random secret (`python3 -c "import secrets; print(secrets.token_hex(32))"`) |
 | `JWT_EXPIRY_HOURS` | `720` (30 days) |
 | `GROQ_API_KEY` | Groq API key |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` (Groq shut down the previous model, `llama-3.1-8b-instant`, on 2026-08-16; if it's still configured, the app uses `openai/gpt-oss-20b` and logs a warning) |
 | `INGESTION_INTERVAL_SECONDS` | `120` (2 minutes) |
 | `MENTION_RETENTION_DAYS` | `30` |
 

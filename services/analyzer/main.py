@@ -2,17 +2,24 @@
 PulseStream Analyzer.
 
 Consumes `mentions.raw` events. For each one:
-1. Calls Gemini to extract sentiment, entities, and a brief summary.
+1. Calls the Groq LLM to extract sentiment, entities, and a brief summary.
 2. Inserts a Mention row in Postgres with all enriched fields.
 3. Publishes a `mentions.analyzed` event so the WebSocket can push live
    updates to dashboards.
 
 Cost discipline:
 - Mentions are analyzed in BATCHES of N to amortize per-call overhead
-  and stay well under Gemini's free-tier 1000 requests/day cap.
-- Each Gemini call is retried with exponential backoff (tenacity).
-- If the LLM returns malformed JSON, we still persist the mention with
-  null sentiment/entities so we don't lose the raw data.
+  and stay within Groq's free-tier request and token limits.
+- Network errors on a Groq call are retried with exponential backoff
+  (tenacity); the Groq client itself retries rate limits and server errors.
+- If the LLM call fails or returns malformed JSON, we still persist the
+  mention with null sentiment/entities so we don't lose the raw data.
+
+Re-analysis:
+- A second loop (`_reanalyze_loop`) finds mentions stored without an
+  analysis and analyses them again in small, rate-limited batches, pushing
+  the result live. A failed LLM call therefore only delays a post's
+  sentiment; it no longer leaves the post unanalysed for good.
 
 Idempotency:
 - Postgres has a unique constraint on (source, external_id). If the
@@ -37,13 +44,13 @@ import asyncio
 import json
 import logging
 import signal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
 from groq import AsyncGroq, APIStatusError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy import select
+from sqlalchemy import select, update
 from aiokafka.errors import KafkaError
 from sqlalchemy.exc import (
     DBAPIError,
@@ -71,7 +78,9 @@ from shared.kafka_client import (
     publish_event,
     send_to_dead_letter,
 )
+from shared.llm import completion_options, groq_model, is_request_rejected, llm_health
 from shared.models import Mention, Topic
+from shared.supervisor import supervise
 
 
 logging.basicConfig(
@@ -81,9 +90,13 @@ logging.basicConfig(
 logger = logging.getLogger("pulsestream.analyzer")
 
 
-# Batch a few mentions together per Gemini call to amortize overhead.
+# Batch a few mentions together per LLM call to amortize overhead.
 BATCH_SIZE = 5
 BATCH_FLUSH_SECONDS = 5.0
+
+# Output-token limit per call. With a reasoning model this covers the short
+# reasoning plus the JSON for 5 posts (~100 tokens each), with room to spare.
+ANALYSIS_MAX_OUTPUT_TOKENS = 2048
 
 
 _stop_event = asyncio.Event()
@@ -101,7 +114,7 @@ def _get_groq_client() -> AsyncGroq:
 
 
 # ----------------------------------------------------------------------
-# Gemini call
+# LLM call
 # ----------------------------------------------------------------------
 
 ANALYSIS_PROMPT = """\
@@ -156,12 +169,12 @@ async def _analyze_batch(
     prompt = ANALYSIS_PROMPT + "\n\n".join(formatted)
 
     response = await client.chat.completions.create(
-        model=settings.groq_model,
         messages=[
             {"role": "user", "content": prompt},
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
+        **completion_options(ANALYSIS_MAX_OUTPUT_TOKENS),
     )
 
     raw = response.choices[0].message.content or "{}"
@@ -246,6 +259,36 @@ def _clean_analysis(analysis: Any) -> dict[str, Any] | None:
     if all(value is None for value in cleaned.values()):
         return None
     return cleaned
+
+
+async def _analyze_posts(
+    posts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any] | None], bool]:
+    """
+    Analyse a batch in one LLM call and clean the results. Never raises.
+
+    Returns (analyses, llm_reachable):
+    - analyses: one cleaned analysis per post, or None where there's none.
+    - llm_reachable: False when the failure was about Groq itself (rate
+      limit, outage, network, API key, retired model), so the re-analysis
+      loop should back off. True when Groq answered, even if it couldn't
+      analyse some or all of these posts.
+
+    Every call is recorded in `llm_health`, which /healthz reports.
+    """
+    try:
+        raw = await _analyze_batch(posts)
+    except Exception as exc:
+        llm_health.record_failure(exc)
+        logger.exception("Groq analysis failed (%s)", groq_model())
+        return [None] * len(posts), is_request_rejected(exc)
+
+    analyses = [_clean_analysis(item) for item in raw]
+    if any(analysis is not None for analysis in analyses):
+        llm_health.record_success()
+    else:
+        llm_health.record_failure("model reply had no usable analysis")
+    return analyses, True
 
 
 async def _persist_and_emit(
@@ -419,12 +462,10 @@ async def _process_batch(batch: list[tuple[Any, dict[str, Any]]]) -> None:
         return
 
     events = [event for _, event in batch]
-    logger.info("Analyzing batch of %d mention(s) via Groq (%s)...", len(events), settings.groq_model)
-    try:
-        analyses = await _analyze_batch(events)
-    except Exception:
-        logger.exception("Groq analysis failed; persisting raw mentions only")
-        analyses = [None] * len(events)
+    logger.info("Analyzing batch of %d mention(s) via Groq (%s)...", len(events), groq_model())
+    # If the call fails, the mentions are still stored (without sentiment)
+    # and the re-analysis loop fills them in later.
+    analyses, _ = await _analyze_posts(events)
 
     stored = 0
     for (msg, raw_event), analysis in zip(batch, analyses):
@@ -517,6 +558,180 @@ async def _consume_mentions() -> None:
             await commit_offsets(consumer)
 
 
+# ----------------------------------------------------------------------
+# Re-analysis of mentions stored without an analysis
+# ----------------------------------------------------------------------
+#
+# A mention is stored even when its LLM call fails (rate limit, outage, or a
+# retired model), so no post is lost; it just has no sentiment yet and the UI
+# shows it as "analyzing…". This loop finds those rows, newest first, and
+# analyses them again a few at a time, so the feed, the sentiment filter, the
+# trend and the digest fill in once the LLM answers again.
+#
+# Budget: at most one call of 5 posts every 3 minutes (20 calls an hour), and
+# only while there's a backlog. Groq's free tier for gpt-oss-20b allows 30
+# requests/min, 1,000 requests/day and 200K tokens/day, so live analysis
+# keeps most of it. If Groq itself is failing, the loop waits twice as long
+# each time (up to 30 minutes) instead of hammering it.
+
+REANALYZE_START_DELAY_SECONDS = 30.0
+REANALYZE_INTERVAL_SECONDS = 180.0
+REANALYZE_MAX_BACKOFF_SECONDS = 1800.0
+REANALYZE_BATCH_SIZE = BATCH_SIZE
+
+# Only recent posts are worth the tokens: the trend chart covers at most
+# 7 days and the digest 24 hours.
+REANALYZE_WINDOW_DAYS = 7
+
+# A post Groq answered for but couldn't analyse this many times is skipped
+# until the next restart, so one odd post can't take up every batch.
+REANALYZE_MAX_ATTEMPTS = 3
+
+_reanalyze_attempts: dict[UUID, int] = {}
+_reanalyze_skipped: set[UUID] = set()
+
+
+async def _load_unanalyzed(limit: int) -> list[dict[str, Any]]:
+    """The newest recent mentions that have no analysis yet."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=REANALYZE_WINDOW_DAYS)
+    query = (
+        select(
+            Mention.id,
+            Mention.topic_id,
+            Mention.source,
+            Mention.title,
+            Mention.content,
+            Mention.url,
+            Topic.user_id,
+        )
+        .join(Topic, Topic.id == Mention.topic_id)
+        .where(Mention.analyzed_at.is_(None), Mention.ingested_at >= cutoff)
+        .order_by(Mention.ingested_at.desc())
+        .limit(limit)
+    )
+    if _reanalyze_skipped:
+        query = query.where(Mention.id.not_in(list(_reanalyze_skipped)))
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(query)
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def _store_reanalyses(results: list[tuple[UUID, dict[str, Any]]]) -> set[UUID]:
+    """
+    Write analyses onto existing mentions, in one transaction. Only rows that
+    still have no analysis are updated, so running this twice (or racing a
+    redelivered message) can't overwrite anything. Returns the ids updated.
+    """
+    now = datetime.now(timezone.utc)
+    updated: set[UUID] = set()
+    async with AsyncSessionLocal() as session:
+        for mention_id, analysis in results:
+            result = await session.execute(
+                update(Mention)
+                .where(Mention.id == mention_id, Mention.analyzed_at.is_(None))
+                .values(
+                    sentiment_score=analysis["sentiment_score"],
+                    sentiment_label=analysis["sentiment_label"],
+                    entities=analysis["entities"],
+                    summary=analysis["summary"],
+                    analyzed_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount:
+                updated.add(mention_id)
+        await session.commit()
+    return updated
+
+
+def _count_failed_attempt(mention_id: UUID) -> None:
+    attempts = _reanalyze_attempts.get(mention_id, 0) + 1
+    if attempts < REANALYZE_MAX_ATTEMPTS:
+        _reanalyze_attempts[mention_id] = attempts
+        return
+    _reanalyze_attempts.pop(mention_id, None)
+    _reanalyze_skipped.add(mention_id)
+    logger.warning(
+        "Mention %s still has no analysis after %d attempts; skipping it until restart",
+        mention_id, attempts,
+    )
+
+
+async def _reanalyze_once() -> bool:
+    """
+    Re-analyse one batch of mentions that have no analysis yet.
+
+    Returns False only when Groq itself is failing, so the loop backs off;
+    True otherwise, including when there's nothing to do. Database errors
+    are raised, and the supervisor restarts the loop.
+    """
+    rows = await _load_unanalyzed(REANALYZE_BATCH_SIZE)
+    if not rows:
+        return True
+
+    analyses, llm_reachable = await _analyze_posts(rows)
+    if not llm_reachable:
+        return False  # nothing counted against these posts; retried later
+
+    usable: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for row, analysis in zip(rows, analyses):
+        if analysis is None:
+            _count_failed_attempt(row["id"])
+        else:
+            usable.append((row, analysis))
+    if not usable:
+        return True
+
+    updated = await _store_reanalyses([(row["id"], analysis) for row, analysis in usable])
+    llm_health.reanalyzed_mentions += len(updated)
+
+    # Push each one live so an open dashboard updates the card in place.
+    # Best-effort: the database already has it, so a failed push only means
+    # the user sees it on the next page load.
+    for row, analysis in usable:
+        _reanalyze_attempts.pop(row["id"], None)
+        if row["id"] not in updated:
+            continue
+        event = {
+            "mention_id": str(row["id"]),
+            "topic_id": str(row["topic_id"]),
+            "user_id": str(row["user_id"]),
+            "source": row["source"],
+            "title": row["title"],
+            "url": row["url"],
+            "sentiment_score": analysis["sentiment_score"],
+            "sentiment_label": analysis["sentiment_label"],
+            "entities": analysis["entities"],
+            "summary": analysis["summary"],
+            "reanalyzed": True,
+        }
+        try:
+            await publish_event(
+                settings.kafka_topic_mentions_analyzed, event, key=str(row["topic_id"])
+            )
+        except Exception:
+            logger.warning(
+                "Could not push re-analysed mention %s live", row["id"], exc_info=True
+            )
+
+    logger.info(
+        "Re-analysed %d of %d mention(s) that had no analysis", len(updated), len(rows)
+    )
+    return True
+
+
+async def _reanalyze_loop() -> None:
+    """Run `_reanalyze_once` on a timer, backing off while Groq is failing."""
+    delay = REANALYZE_START_DELAY_SECONDS
+    while not _stop_event.is_set():
+        await asyncio.sleep(delay)
+        if await _reanalyze_once():
+            delay = REANALYZE_INTERVAL_SECONDS
+        else:
+            delay = min(max(delay, REANALYZE_INTERVAL_SECONDS) * 2, REANALYZE_MAX_BACKOFF_SECONDS)
+            logger.warning("Groq unavailable; next re-analysis attempt in %.0fs", delay)
+
+
 async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -527,9 +742,12 @@ async def main() -> None:
 
     await get_producer()  # warm up
 
+    reanalyzer = asyncio.create_task(supervise("analyzer-backfill", _reanalyze_loop))
     try:
         await _consume_mentions()
     finally:
+        reanalyzer.cancel()
+        await asyncio.gather(reanalyzer, return_exceptions=True)
         await close_producer()
         await engine.dispose()
         logger.info("Analyzer shut down cleanly.")

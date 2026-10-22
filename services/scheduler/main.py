@@ -44,12 +44,18 @@ from shared.kafka_client import (
     publish_event,
     send_to_dead_letter,
 )
+from shared.llm import completion_options, llm_health
 from shared.redis_client import get_redis
 from shared.models import Mention, Topic, TopicDigest
 from shared.schemas import IngestionJobEvent, TopicCreatedEvent
 
 
 _groq_client: AsyncGroq | None = None
+
+# Output-token limit for a digest: the 2-3 sentence summary plus a reasoning
+# model's short reasoning. (The old limit of 200 suited a non-reasoning model;
+# a reasoning model could spend all of it thinking and return nothing.)
+DIGEST_MAX_OUTPUT_TOKENS = 1024
 
 
 def _get_groq_client() -> AsyncGroq:
@@ -75,10 +81,9 @@ async def _call_groq_for_digest(topic_name: str, lines: list[str]) -> str:
         + "\n".join(lines)
     )
     response = await client.chat.completions.create(
-        model=settings.groq_model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=200,
         temperature=0.3,
+        **completion_options(DIGEST_MAX_OUTPUT_TOKENS),
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -320,9 +325,18 @@ class Scheduler:
             ]
             if lines:
                 try:
-                    summary = await _call_groq_for_digest(topic.name, lines)
-                except Exception:
-                    logger.warning("Groq digest call failed for topic %s; skipping summary", topic.id)
+                    summary = await _call_groq_for_digest(topic.name, lines) or None
+                except Exception as exc:
+                    llm_health.record_failure(exc)
+                    logger.warning(
+                        "Groq digest call failed for topic %s; skipping summary",
+                        topic.id, exc_info=True,
+                    )
+                else:
+                    if summary:
+                        llm_health.record_success()
+                    else:
+                        llm_health.record_failure("digest reply was empty")
 
         async with AsyncSessionLocal() as session:
             digest = TopicDigest(

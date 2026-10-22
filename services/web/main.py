@@ -9,8 +9,10 @@ Render's free tier (750 h/month = exactly 1 always-on service):
   • Scheduler background task — periodic ingestion fan-out + digests
   • Ingester background task — fetches HN/Reddit, publishes mentions.raw
   • Analyzer background task — enriches mentions.raw via Groq
+  • Re-analyzer background task — fills in sentiment for mentions stored
+    while the Groq call was failing
 
-All four workers run as asyncio tasks on the same event loop as uvicorn.
+All the workers run as asyncio tasks on the same event loop as uvicorn.
 They are cancelled cleanly on shutdown.
 """
 
@@ -30,6 +32,7 @@ from sqlalchemy import text
 from shared.config import settings
 from shared.db import engine, Base
 from shared.kafka_client import close_producer, get_producer
+from shared.llm import llm_health
 from shared.redis_client import close_redis, get_redis
 from shared.supervisor import restart_counts, supervise
 import shared.models  # noqa: F401 — registers all ORM classes with Base
@@ -108,6 +111,16 @@ async def _run_analyzer() -> None:
     logger.info("Analyzer stopped.")
 
 
+async def _run_reanalyzer() -> None:
+    """Fills in sentiment for mentions stored while the LLM call was failing."""
+    from services.analyzer.main import _reanalyze_loop
+    try:
+        await supervise("analyzer-backfill", _reanalyze_loop)
+    except asyncio.CancelledError:
+        pass
+    logger.info("Re-analyzer stopped.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up PulseStream (combined service)...")
@@ -128,6 +141,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_run_scheduler(),   name="scheduler"),
         asyncio.create_task(_run_ingester(),    name="ingester"),
         asyncio.create_task(_run_analyzer(),    name="analyzer"),
+        asyncio.create_task(_run_reanalyzer(),  name="analyzer-backfill"),
         asyncio.create_task(consume_analyzed_mentions(), name="ws-consumer"),
     ]
 
@@ -185,14 +199,21 @@ async def healthz() -> JSONResponse:
     Liveness probe. Returns 200 if the process is up.
 
     Also reports how many times each background worker has been restarted
-    by its supervisor, so a crash loop is visible without reading logs.
+    by its supervisor, so a crash loop is visible without reading logs, and
+    how LLM calls are going (model, last success, last error, consecutive
+    failures), so a model that stops answering is visible too. Neither
+    changes the status: the process is alive, so Render shouldn't restart it.
 
     Used by:
     - Docker HEALTHCHECK in the Dockerfile
     - Kubernetes liveness probes (later)
     - Load balancers
     """
-    return JSONResponse({"status": "ok", "worker_restarts": dict(restart_counts)})
+    return JSONResponse({
+        "status": "ok",
+        "worker_restarts": dict(restart_counts),
+        "llm": llm_health.snapshot(),
+    })
 
 
 # Serve the frontend SPA. Must be mounted LAST so API routes take precedence.

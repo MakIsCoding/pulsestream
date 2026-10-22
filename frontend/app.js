@@ -291,10 +291,50 @@ function disconnectWs() {
   state.wsConnected = false
 }
 
+function pushHasAnalysis(mention) {
+  return Boolean(
+    mention.sentiment_label ||
+    mention.summary ||
+    mention.sentiment_score != null ||
+    (mention.entities && mention.entities.length)
+  )
+}
+
+function scheduleInsightRefresh() {
+  // Debounce refresh the active insight tab so charts stay current
+  clearTimeout(_trendRefreshTimer)
+  _trendRefreshTimer = setTimeout(() => {
+    if (state.insightTab === 'trend') refreshTrend(state.currentTopicId)
+    else refreshSummary(state.currentTopicId)
+  }, 2000)
+}
+
 function handleLiveMention(mention) {
-  // The backend delivers at-least-once, so the same mention can be pushed more
-  // than once (e.g. a batch re-processed after a redeploy). Show each id once.
-  if (state.mentions.some(m => m.id === mention.mention_id)) return
+  const analyzed = pushHasAnalysis(mention)
+  const existing = state.mentions.find(m => m.id === mention.mention_id)
+
+  // Two kinds of push are about a mention the user may already have:
+  // - a repeat (the backend delivers at-least-once, e.g. a batch re-processed
+  //   after a redeploy), and
+  // - `reanalyzed`: an older mention stored while the LLM call was failing
+  //   has now been analysed.
+  // Neither is a new mention: fill in the card if it's on screen, never add
+  // a second card or show a "new mention" toast.
+  if (existing || mention.reanalyzed) {
+    if (existing && analyzed) {
+      Object.assign(existing, {
+        summary: mention.summary,
+        sentiment_score: mention.sentiment_score,
+        sentiment_label: mention.sentiment_label,
+        entities: mention.entities || [],
+        analyzed_at: existing.analyzed_at || new Date().toISOString(),
+      })
+      renderMentionsFeed()
+    }
+    if (analyzed && state.currentTopicId === mention.topic_id) scheduleInsightRefresh()
+    return
+  }
+
   if (state.currentTopicId === mention.topic_id) {
     state.mentions.unshift({
       id: mention.mention_id,
@@ -308,17 +348,14 @@ function handleLiveMention(mention) {
       url: mention.url || null,
       author: null,
       ingested_at: new Date().toISOString(),
-      analyzed_at: new Date().toISOString(),
+      // No analysis yet (the LLM call failed): show "analyzing…" until the
+      // backend re-analyses it and pushes the result.
+      analyzed_at: analyzed ? new Date().toISOString() : null,
     })
     state.mentionsTotal++
     state.newMentionIds.add(mention.mention_id)
     renderMentionsFeed()
-    // Debounce refresh the active insight tab so charts stay current
-    clearTimeout(_trendRefreshTimer)
-    _trendRefreshTimer = setTimeout(() => {
-      if (state.insightTab === 'trend') refreshTrend(state.currentTopicId)
-      else refreshSummary(state.currentTopicId)
-    }, 2000)
+    scheduleInsightRefresh()
   }
   const topicName = (state.topics.find(t => t.id === mention.topic_id) || {}).name || 'a topic'
   showToast(`New mention — ${topicName}`, mention.title || '(no title)', mention.topic_id)
@@ -605,7 +642,7 @@ function _lpHero() {
       </div>
       <!-- Footer strip -->
       <div class="px-3 py-2 bg-slate-900/50 border-t border-slate-800 flex items-center justify-between">
-        <span class="text-xs text-slate-600">Groq llama-3.1-8b · sentiment analysis</span>
+        <span class="text-xs text-slate-600">Groq gpt-oss-20b · sentiment analysis</span>
         <span class="text-xs text-indigo-400 font-medium">● ingesting</span>
       </div>
     </div>
@@ -715,7 +752,7 @@ function _lpFeatures() {
       accent: 'bg-violet-500/10 border-violet-500/25 text-violet-400',
       icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707.707M12 5a7 7 0 100 14 7 7 0 000-14z"/>`,
       title: 'LLM sentiment analysis',
-      desc: 'Groq Cloud (llama-3.1-8b-instant) extracts a sentiment score, label, named entities, and a one-line summary per mention. ~100ms latency.',
+      desc: 'Groq Cloud (gpt-oss-20b) extracts a sentiment score, label, named entities, and a one-line summary per mention, in batches of 5. Posts stored while the model was unreachable are re-analysed automatically.',
     },
     {
       accent: 'bg-red-500/10 border-red-500/25 text-red-400',
@@ -771,12 +808,12 @@ function _lpStack() {
     {
       label: 'Messaging & Cache',
       color: 'text-orange-400',
-      items: ['Apache Kafka (Upstash)', 'Redis (Upstash)', 'Consumer groups', 'At-least-once delivery'],
+      items: ['Apache Kafka (Aiven)', 'Redis (Upstash)', 'Consumer groups', 'At-least-once delivery'],
     },
     {
       label: 'AI / Data',
       color: 'text-violet-400',
-      items: ['Groq Cloud inference', 'llama-3.1-8b-instant', 'PostgreSQL (Neon)', 'Resend (email)'],
+      items: ['Groq Cloud inference', 'gpt-oss-20b', 'PostgreSQL (Neon)', 'Resend (email)'],
     },
     {
       label: 'Frontend',
