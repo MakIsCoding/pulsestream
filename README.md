@@ -236,7 +236,7 @@ The repo includes a `render.yaml` that deploys everything as a single free web s
 | `JWT_SECRET` | Random secret (`python3 -c "import secrets; print(secrets.token_hex(32))"`) |
 | `JWT_EXPIRY_HOURS` | `720` (30 days) |
 | `GROQ_API_KEY` | Groq API key |
-| `GROQ_MODEL` | `openai/gpt-oss-20b` (Groq shut down the previous model, `llama-3.1-8b-instant`, on 2026-08-16; if it's still configured, the app uses `openai/gpt-oss-20b` and logs a warning) |
+| `GROQ_MODEL` | `openai/gpt-oss-20b`. Groq shut down `llama-3.1-8b-instant` and `llama-3.3-70b-versatile` on 2026-08-16. If either is still configured, or Groq reports that the configured model doesn't exist, the app switches to `openai/gpt-oss-20b` and logs it |
 | `INGESTION_INTERVAL_SECONDS` | `120` (2 minutes) |
 | `MENTION_RETENTION_DAYS` | `30` |
 

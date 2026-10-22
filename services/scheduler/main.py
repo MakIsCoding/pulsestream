@@ -44,7 +44,7 @@ from shared.kafka_client import (
     publish_event,
     send_to_dead_letter,
 )
-from shared.llm import completion_options, llm_health
+from shared.llm import completion_options, fall_back_if_model_unavailable, llm_health
 from shared.redis_client import get_redis
 from shared.models import Mention, Topic, TopicDigest
 from shared.schemas import IngestionJobEvent, TopicCreatedEvent
@@ -328,6 +328,7 @@ class Scheduler:
                     summary = await _call_groq_for_digest(topic.name, lines) or None
                 except Exception as exc:
                     llm_health.record_failure(exc)
+                    fall_back_if_model_unavailable(exc)  # next digest uses a working model
                     logger.warning(
                         "Groq digest call failed for topic %s; skipping summary",
                         topic.id, exc_info=True,

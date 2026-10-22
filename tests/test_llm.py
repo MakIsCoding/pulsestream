@@ -35,15 +35,17 @@ GOOD = {"sentiment_score": 0.6, "sentiment_label": "positive", "entities": ["gro
 @pytest.fixture(autouse=True)
 def fresh_state(monkeypatch):
     """Each test starts with clean LLM health and re-analysis bookkeeping."""
-    llm.llm_health.__init__()
-    analyzer._reanalyze_attempts.clear()
-    analyzer._reanalyze_skipped.clear()
-    analyzer._stop_event.clear()
+    def reset():
+        llm.llm_health.__init__()
+        llm._unavailable_models.clear()
+        analyzer._reanalyze_attempts.clear()
+        analyzer._reanalyze_skipped.clear()
+        analyzer._stop_event.clear()
+
+    reset()
     monkeypatch.setattr(settings, "groq_model", "openai/gpt-oss-20b")
     yield
-    llm.llm_health.__init__()
-    analyzer._reanalyze_attempts.clear()
-    analyzer._reanalyze_skipped.clear()
+    reset()
 
 
 def groq_error(cls, status: int, code: str, message: str = "details for org_secret123"):
@@ -82,19 +84,53 @@ def test_reasoning_model_gets_low_effort_and_room_to_answer():
 
 
 def test_non_reasoning_model_gets_no_reasoning_parameters(monkeypatch):
-    monkeypatch.setattr(settings, "groq_model", "llama-3.3-70b-versatile")
+    monkeypatch.setattr(settings, "groq_model", "example/non-reasoning-model")
     assert llm.completion_options(512) == {
-        "model": "llama-3.3-70b-versatile",
+        "model": "example/non-reasoning-model",
         "max_completion_tokens": 512,
     }
 
 
-def test_retired_model_in_env_is_replaced(monkeypatch):
-    monkeypatch.setattr(settings, "groq_model", "llama-3.1-8b-instant")
+@pytest.mark.parametrize("retired", ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"])
+def test_retired_model_in_env_is_replaced(monkeypatch, retired):
+    monkeypatch.setattr(settings, "groq_model", retired)
     assert llm.groq_model() == "openai/gpt-oss-20b"
     snap = llm.llm_health.snapshot()
     assert snap["model"] == "openai/gpt-oss-20b"
-    assert snap["configured_model"] == "llama-3.1-8b-instant"
+    assert snap["configured_model"] == retired
+
+
+def test_model_groq_no_longer_serves_falls_back_and_retries_at_once(monkeypatch):
+    monkeypatch.setattr(settings, "groq_model", "some/model-retired-later")
+    models_called = []
+
+    async def analyze(posts):
+        models_called.append(llm.groq_model())
+        if llm.groq_model() == "some/model-retired-later":
+            raise groq_error(groq.NotFoundError, 404, "model_not_found")
+        return [GOOD]
+
+    monkeypatch.setattr(analyzer, "_analyze_batch", analyze)
+    analyses, reachable = asyncio.run(analyzer._analyze_posts([{"title": "a"}]))
+
+    assert models_called == ["some/model-retired-later", "openai/gpt-oss-20b"]
+    assert analyses == [GOOD] and reachable is True
+    snap = llm.llm_health.snapshot()
+    assert snap["model"] == "openai/gpt-oss-20b" and snap["consecutive_failures"] == 0
+    assert snap["configured_model"] == "some/model-retired-later"
+
+
+def test_no_retry_loop_when_the_default_model_itself_is_missing(monkeypatch):
+    calls = []
+
+    async def analyze(posts):
+        calls.append(1)
+        raise groq_error(groq.NotFoundError, 404, "model_not_found")
+
+    monkeypatch.setattr(analyzer, "_analyze_batch", analyze)
+    analyses, reachable = asyncio.run(analyzer._analyze_posts([{"title": "a"}]))
+
+    assert calls == [1] and analyses == [None] and reachable is False
 
 
 def test_analyzer_call_uses_reasoning_settings_and_json_mode(monkeypatch):

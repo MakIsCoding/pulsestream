@@ -8,10 +8,13 @@ Model choice:
   even when analysis fails, the feed kept filling with posts that had no
   sentiment and nothing crashed. That's why this module also tracks LLM
   health (see `LLMHealth`), and why the analyzer re-analyses such posts later.
-- The default is now `openai/gpt-oss-20b`, Groq's recommended replacement. If
-  GROQ_MODEL still names a model Groq has retired, `groq_model()` swaps in its
-  replacement and logs a warning, so an old env var can't silently break
-  analysis again.
+- The default is now `openai/gpt-oss-20b`, Groq's recommended replacement.
+  Two guards stop an old env var from silently breaking analysis again:
+  - if GROQ_MODEL names a model Groq is known to have shut down,
+    `groq_model()` uses the default instead and logs a warning;
+  - if Groq answers that the model in use doesn't exist (any more),
+    `fall_back_if_model_unavailable()` switches to the default for the rest
+    of the process and logs an error.
 
 Reasoning models:
 - gpt-oss-20b "thinks" before it answers, and those reasoning tokens count
@@ -35,30 +38,32 @@ logger = logging.getLogger("pulsestream.llm")
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 
-# Models Groq has shut down, mapped to the replacement Groq recommends.
-RETIRED_MODELS = {
-    "llama-3.1-8b-instant": DEFAULT_GROQ_MODEL,
-}
+# Models Groq shut down on 2026-08-16 (console.groq.com/docs/deprecations).
+# Either name in GROQ_MODEL is replaced by the default.
+RETIRED_MODELS = {"llama-3.1-8b-instant", "llama-3.3-70b-versatile"}
 
 REASONING_MODEL_PREFIXES = ("openai/gpt-oss",)
 
 _warned_about: set[str] = set()
+# Models Groq said don't exist while this process was running.
+_unavailable_models: set[str] = set()
 
 
 def groq_model() -> str:
     """The model to call: GROQ_MODEL, unless Groq has retired it."""
     configured = (settings.groq_model or "").strip() or DEFAULT_GROQ_MODEL
-    replacement = RETIRED_MODELS.get(configured)
-    if replacement is None:
+    if configured in _unavailable_models:
+        return DEFAULT_GROQ_MODEL
+    if configured not in RETIRED_MODELS:
         return configured
     if configured not in _warned_about:
         _warned_about.add(configured)
         logger.warning(
             "GROQ_MODEL=%s has been shut down by Groq; using %s instead. "
             "Update GROQ_MODEL to remove this warning.",
-            configured, replacement,
+            configured, DEFAULT_GROQ_MODEL,
         )
-    return replacement
+    return DEFAULT_GROQ_MODEL
 
 
 def is_reasoning_model(model: str) -> bool:
@@ -108,6 +113,27 @@ def is_request_rejected(exc: BaseException) -> bool:
     if not isinstance(exc, (BadRequestError, UnprocessableEntityError)):
         return False
     return groq_error_code(exc) not in MODEL_ERROR_CODES
+
+
+def fall_back_if_model_unavailable(exc: BaseException) -> bool:
+    """
+    If Groq says the model in use doesn't exist (any more), use the default
+    model from now on, so a model retired after this code was written can't
+    silently stop analysis. Returns True if it switched, so the caller can
+    retry once straight away.
+    """
+    if groq_error_code(exc) not in MODEL_ERROR_CODES:
+        return False
+    model = groq_model()
+    if model == DEFAULT_GROQ_MODEL:
+        return False  # nothing to fall back to
+    _unavailable_models.add(model)
+    logger.error(
+        "Groq says model %s is unavailable (%s); using %s from now on. "
+        "Update GROQ_MODEL.",
+        model, groq_error_code(exc), DEFAULT_GROQ_MODEL,
+    )
+    return True
 
 
 def describe_error(exc: BaseException | str) -> str:

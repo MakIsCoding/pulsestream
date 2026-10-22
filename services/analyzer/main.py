@@ -78,7 +78,13 @@ from shared.kafka_client import (
     publish_event,
     send_to_dead_letter,
 )
-from shared.llm import completion_options, groq_model, is_request_rejected, llm_health
+from shared.llm import (
+    completion_options,
+    fall_back_if_model_unavailable,
+    groq_model,
+    is_request_rejected,
+    llm_health,
+)
 from shared.models import Mention, Topic
 from shared.supervisor import supervise
 
@@ -274,14 +280,21 @@ async def _analyze_posts(
       loop should back off. True when Groq answered, even if it couldn't
       analyse some or all of these posts.
 
-    Every call is recorded in `llm_health`, which /healthz reports.
+    Every call is recorded in `llm_health`, which /healthz reports. If Groq
+    says the model no longer exists, it switches to the default model and
+    tries once more straight away.
     """
-    try:
-        raw = await _analyze_batch(posts)
-    except Exception as exc:
-        llm_health.record_failure(exc)
-        logger.exception("Groq analysis failed (%s)", groq_model())
-        return [None] * len(posts), is_request_rejected(exc)
+    for attempt in (1, 2):
+        model = groq_model()
+        try:
+            raw = await _analyze_batch(posts)
+            break
+        except Exception as exc:
+            llm_health.record_failure(exc)
+            logger.exception("Groq analysis failed (%s)", model)
+            if attempt == 1 and fall_back_if_model_unavailable(exc):
+                continue
+            return [None] * len(posts), is_request_rejected(exc)
 
     analyses = [_clean_analysis(item) for item in raw]
     if any(analysis is not None for analysis in analyses):
